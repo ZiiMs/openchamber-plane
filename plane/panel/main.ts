@@ -709,11 +709,15 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       heading.className = "plane-section";
       heading.style.cssText = "display:block;width:100%;text-align:left;margin:10px 0 4px;padding:0;border:0;background:none;font-size:0.75rem;color:var(--oc-muted);cursor:pointer;";
       heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      heading.dataset.state = section.state;
       heading.textContent = `${collapsed ? "▸" : "▾"} ${sectionLabel(section)}`;
       heading.addEventListener("click", () => {
         if (collapsedSections.has(section.state)) collapsedSections.delete(section.state);
         else collapsedSections.add(section.state);
         renderResults(gen, "", false);
+        // The toggle re-render replaces the focused button; refocus its
+        // replacement so keyboard collapsing/expanding is uninterrupted.
+        listBox?.querySelector<HTMLElement>(`button.plane-section[data-state="${CSS.escape(section.state)}"]`)?.focus();
       });
       listBox.append(heading);
       results.push({ dispose: () => heading.remove() });
