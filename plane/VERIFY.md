@@ -169,9 +169,9 @@ walks this list once:
 ## Work item detail modal (issue #12)
 
 Pure seams without a tenant: `node plane/check.mjs` covers the detail fetch's
-expand set, date and priority shaping, relation names, the display shape with
-missing fields hidden, and the interim description flattening. A human with a
-Plane Cloud tenant walks this list once:
+expand set, date and priority shaping, relation names, and the display shape
+with missing fields hidden. A human with a Plane Cloud tenant walks this list
+once:
 
 - [ ] Clicking a row selects it and opens the modal; the row behind it stays
       highlighted.
@@ -187,6 +187,20 @@ Plane Cloud tenant walks this list once:
 - [ ] A work item archived after the list loaded shows "Could not load this
       work item" with Open in Plane still offered.
 - [ ] Load more and Retry still work from the panel footer.
+
+## Formatted description (issue #13)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the allow-list tree
+— unknown tags dropped with their text kept, attributes dropped, http links
+kept and other schemes dropped, entities decoded, unclosed list items closed
+like a browser would. A human with a Plane Cloud tenant walks this list once:
+
+- [ ] A description with paragraphs, a list, code, and a link renders as
+      formatting, not as markup.
+- [ ] A link in the description opens in the browser and does not navigate the
+      panel away.
+- [ ] Markup the allow-list rejects (script, style, iframe, event-handler
+      attributes) shows as text, with nothing executed.
 
 ## Known needs-tenant risks (from issue #3, extended on issue #5)
 

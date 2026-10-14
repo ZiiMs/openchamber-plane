@@ -80,6 +80,7 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "aria-modal", // the detail modal is a dialog (issue #12)
     "Could not load this work item", // the archived/failed notice
     "Loading work item", // the modal's loading label
+    "plane-rich", // the description renders through the allow-list (issue #13)
   ]) if (!src.includes(needle)) fail(`panel/main.js missing detail wiring: ${needle}`); else ok(`detail wiring present: ${needle}`);
   for (const needle of [
     "onResolve", // slash command answers instead of stubbing null
@@ -267,8 +268,23 @@ else {
   eq([shaped.startDate, shaped.targetDate, shaped.createdAt], ["2026-01-12", null, "2026-01-14"], "the detail carries dates, missing ones null");
   eq(detail.shapeWorkItemDetail({ identifier: "PROJ-1", name: "Sparse" }).priority, null, "a sparse payload hides what it lacks");
   for (const bad of [null, undefined, "nope", 42, {}, { data: [] }, { name: "no id" }]) eq(detail.shapeWorkItemDetail(bad), null, `the detail rejects ${JSON.stringify(bad)}`);
-  eq(detail.plainTextFromHtml("<p>Sign in</p><ul><li>loop</li></ul><script>alert(1)</script>"), "Sign in\n• loop\nalert(1)", "the description flattens to text");
-  eq(detail.plainTextFromHtml("<p>&lt;b&gt; &amp; more</p>"), "<b> & more", "entities decode after tags are dropped");
-  eq(detail.plainTextFromHtml(undefined), "", "a missing description is empty");
+  // --- Issue #13: the description allow-list ---
+  // Hostile input is the point: these assertions are the trust boundary.
+  eq(detail.parseDescriptionHtml("<p>Loop <b>now</b></p>"),
+    [{ tag: "p", children: [{ text: "Loop " }, { tag: "b", children: [{ text: "now" }] }] }], "allow-listed tags build a tree");
+  eq(detail.parseDescriptionHtml("<script>alert(1)</script>"), [{ text: "alert(1)" }], "a dropped tag keeps its text");
+  eq(detail.parseDescriptionHtml('<img src=x onerror="alert(1)"><p onclick="alert(1)">ok</p>'),
+    [{ tag: "p", children: [{ text: "ok" }] }], "attributes are dropped with their tags");
+  eq(detail.parseDescriptionHtml('<a href="https://app.plane.so/x" target="_blank">Plane</a>'),
+    [{ tag: "a", children: [{ text: "Plane" }], href: "https://app.plane.so/x" }], "an http link keeps its href and nothing else");
+  eq(detail.parseDescriptionHtml('<a href="javascript:alert(1)">x</a>'),
+    [{ tag: "a", children: [{ text: "x" }] }], "a non-http link renders as text");
+  eq(detail.parseDescriptionHtml("<p>&lt;b&gt; &amp; more</p>"), [{ tag: "p", children: [{ text: "<b> & more" }] }], "entities decode into text");
+  eq(detail.parseDescriptionHtml("<ul><li>a<li>b</ul>"),
+    [{ tag: "ul", children: [{ tag: "li", children: [{ text: "a" }] }, { tag: "li", children: [{ text: "b" }] }] }], "an unclosed list item closes like a browser would");
+  eq(detail.parseDescriptionHtml("<p>a</p></p>stray"), [{ tag: "p", children: [{ text: "a" }] }, { text: "stray" }], "a stray close is ignored");
+  eq(detail.parseDescriptionHtml(undefined), [], "a missing description is an empty tree");
+  eq(detail.isHttpUrl("https://x"), true, "http links pass");
+  eq(detail.isHttpUrl("javascript:x"), false, "javascript: does not");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");

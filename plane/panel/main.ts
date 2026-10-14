@@ -40,10 +40,11 @@ import {
   workItemsQuery,
   WORKSPACES_DISCOVERY_PATH,
 } from "../browse-logic.mjs";
-import { detailQuery, plainTextFromHtml, shapeWorkItemDetail } from "../detail-logic.mjs";
+import { detailQuery, parseDescriptionHtml, shapeWorkItemDetail } from "../detail-logic.mjs";
 
 type Row = { id: string; identifier: string; title: string; state: string; stateGroup: string | null; url: string };
 type State = { id: string; name: string; group: string | null; sequence: number | null };
+type RichNode = { tag?: string; text?: string; href?: string; children?: RichNode[] };
 type Detail = {
   identifier: string;
   title: string;
@@ -223,6 +224,42 @@ const closeDetail = () => {
   focusBeforeModal = null;
 };
 
+// Description rendering (issue #13): the tree from parseDescriptionHtml is
+// turned into elements here — never innerHTML — so nothing in a Plane
+// description can execute or carry an attribute the allow-list dropped.
+const RICH_CSS = ".plane-rich p{margin:0 0 8px}.plane-rich ul,.plane-rich ol{margin:0 0 8px;padding-left:20px}.plane-rich li{margin:2px 0}.plane-rich h1{font-size:1.05rem;margin:8px 0 4px}.plane-rich h2{font-size:0.95rem;margin:8px 0 4px}.plane-rich h3{font-size:0.9rem;margin:8px 0 4px}.plane-rich code{font-family:var(--oc-mono,monospace);font-size:0.8125rem;background:var(--oc-muted-surface,rgba(127,127,127,.15));padding:1px 4px;border-radius:4px}.plane-rich pre{white-space:pre-wrap;background:var(--oc-muted-surface,rgba(127,127,127,.15));padding:8px;border-radius:6px;overflow:auto}.plane-rich pre code{background:none;padding:0}";
+
+const ensureRichStyle = () => {
+  if (document.getElementById("plane-rich-style")) return;
+  const style = document.createElement("style");
+  style.id = "plane-rich-style";
+  style.textContent = RICH_CSS;
+  document.head.append(style);
+};
+
+const renderRich = (nodes: RichNode[]): DocumentFragment => {
+  const frag = document.createDocumentFragment();
+  for (const node of nodes) {
+    if (typeof node.text === "string") {
+      frag.append(document.createTextNode(node.text));
+      continue;
+    }
+    if (!node.tag) continue;
+    const el = document.createElement(node.tag);
+    if (node.tag === "a" && node.href) {
+      el.setAttribute("href", node.href);
+      el.style.cssText = "color:var(--oc-primary-text,var(--oc-primary));text-decoration:underline;cursor:pointer;";
+      el.addEventListener("click", (event) => {
+        event.preventDefault();
+        void host.openUrl(node.href as string);
+      });
+    }
+    el.append(renderRich(node.children ?? []));
+    frag.append(el);
+  }
+  return frag;
+};
+
 const detailRow = (label: string, value: string | null, pill?: { label: string; tone: string }) => {
   if (!pill && !value) return null;
   const row = document.createElement("div");
@@ -316,12 +353,14 @@ async function openDetail(gen: number, row: Row) {
     ]) {
       if (node) body.append(node);
     }
-    const description = plainTextFromHtml(detail.description);
-    if (description) {
-      const text = document.createElement("div");
-      text.style.cssText = "white-space:pre-wrap;margin-top:4px;";
-      text.textContent = description;
-      body.append(text);
+    const nodes = parseDescriptionHtml(detail.description) as RichNode[];
+    if (nodes.length > 0) {
+      ensureRichStyle();
+      const rich = document.createElement("div");
+      rich.className = "plane-rich";
+      rich.style.cssText = "margin-top:4px;";
+      rich.append(renderRich(nodes));
+      body.append(rich);
     }
     card.append(body);
   }
