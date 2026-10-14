@@ -1,4 +1,4 @@
-// Pure Plane attach helpers for ticket #6: chip shaping, new-session text,
+// Pure Plane attach helpers for issue #6: chip shaping, new-session text,
 // open-work-item count, rail badge value. No DOM, no SDK, no network —
 // exercised directly by plane/check.mjs.
 import { browseUrl } from "./browse-logic.mjs";
@@ -51,4 +51,13 @@ export function badgeForOpenCount(connected, openCount) {
   if (!connected) return null;
   if (typeof openCount !== "number" || openCount <= 0) return null;
   return Math.min(Math.floor(openCount), BADGE_MAX);
+}
+
+// Rail badge from a list response: prefer the v2 envelope total_count
+// (covers rows on pages not yet loaded) when the response carries one,
+// else fall back to the loaded-row open count. Unknown state groups
+// already count as open in that fallback (isOpenWorkItem above).
+export function badgeForListResult(connected, totalCount, loadedOpen) {
+  const total = typeof totalCount === "number" && Number.isFinite(totalCount) ? Math.floor(totalCount) : null;
+  return badgeForOpenCount(connected, total ?? loadedOpen);
 }

@@ -1,4 +1,4 @@
-// Pure remembered-mapping helpers for ticket #7: the workspace slug plus
+// Pure remembered-mapping helpers for issue #7: the workspace slug plus
 // default project live in the integration settings fields and are cached in
 // per-extension host.storage. Read-through: settings win, storage fills
 // blanks, writes update both — so returning users are not asked twice.

@@ -12,7 +12,7 @@ import {
   mountText,
 } from "@openchamber/sdk/ui";
 import {
-  badgeForOpenCount,
+  badgeForListResult,
   buildAttachItem,
   buildSessionText,
   isOpenWorkItem,
@@ -24,6 +24,7 @@ import {
   isIdentifierQuery,
   isValidSlug,
   normalizeWorkItem,
+  parseDiscoveredWorkspaces,
   parseWorkItemsEnvelope,
   projectsPath,
   rateLimitDelayMs,
@@ -31,6 +32,7 @@ import {
   workItemByIdentifierPath,
   workItemsPath,
   workItemsQuery,
+  WORKSPACES_DISCOVERY_PATH,
 } from "../browse-logic.mjs";
 
 type Row = { id: string; identifier: string; title: string; state: string; url: string };
@@ -84,10 +86,10 @@ async function apiGetWithBackoff(gen: number, path: string, query?: Record<strin
 }
 
 const refreshBadge = () => {
-  void host.setBadge(badgeForOpenCount(connected, openCount)).catch(() => {});
+  void host.setBadge(badgeForListResult(connected, serverTotal, openCount)).catch(() => {});
 };
 
-// Remembered mapping (#7): workspace slug + default project persist across
+// Remembered mapping (issue #7): workspace slug + default project persist across
 // restarts via the host.storage cache. Reads merge settings-over-storage
 // (mergeMapping); writes update both. The cache is best-effort: a storage
 // failure leaves the in-memory settings untouched.
@@ -128,12 +130,18 @@ const selectedChip = () => {
   };
 };
 
-const say = (gen: number, tone: "info" | "success" | "error", note: string) => {
+const showNotice = (gen: number, tone: "info" | "success" | "error", note: string) => {
   if (gen !== generation) return;
   actionTone = tone;
   actionNote = note;
   renderResults(gen, "", false);
 };
+
+const describeError = (error: unknown) =>
+  error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error);
+
+const footerButton = (label: string, onClick: () => void, disabled = false) =>
+  mountButton(footerBox, { label, variant: "outline", size: "sm", disabled, onClick });
 
 async function attachSelected(gen: number) {
   const found = selectedChip();
@@ -142,9 +150,9 @@ async function attachSelected(gen: number) {
     await host.attach(found.chip);
     if (gen !== generation) return;
     await host.close(); // dismisses the attach dialog; no-op on the rail
-    say(gen, "success", `Attached ${found.row.identifier} to the chat box.`);
+    showNotice(gen, "success", `Attached ${found.row.identifier} to the chat box.`);
   } catch (error) {
-    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+    showNotice(gen, "error", describeError(error));
   }
 }
 
@@ -160,10 +168,10 @@ async function startSessionFromSelected(gen: number) {
   try {
     const result = await host.startSession({ ...found.chip, text });
     if (gen !== generation) return;
-    if (result.sessionId) say(gen, "success", `Started a session for ${found.row.identifier}.`);
-    else say(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
+    if (result.sessionId) showNotice(gen, "success", `Started a session for ${found.row.identifier}.`);
+    else showNotice(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
   } catch (error) {
-    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+    showNotice(gen, "error", describeError(error));
   }
 }
 
@@ -172,13 +180,13 @@ async function linkSelected(gen: number) {
   if (!found) return;
   try {
     await host.sessionLink(found.chip);
-    say(gen, "success", `Linked ${found.row.identifier} to the open session.`);
+    showNotice(gen, "success", `Linked ${found.row.identifier} to the open session.`);
   } catch (error) {
     if (error instanceof HostRequestError && error.code === "NO_SESSION") {
-      say(gen, "info", "No open session — open or start a session first, then link.");
+      showNotice(gen, "info", "No open session — open or start a session first, then link.");
       return;
     }
-    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+    showNotice(gen, "error", describeError(error));
   }
 }
 
@@ -193,6 +201,8 @@ let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
 let openCount = 0;
+let serverTotal: number | null = null;
+let discoveredSlugs: string[] = [];
 let actionNote = "";
 let actionTone: "info" | "success" | "error" = "info";
 let statusNote = "";
@@ -206,6 +216,7 @@ const paint = async () => {
   footerBox = null;
   if (!connected) {
     openCount = 0;
+    serverTotal = null;
     refreshBadge();
     mounted.push(mountEmpty(root, {
       title: "Not connected",
@@ -215,15 +226,21 @@ const paint = async () => {
   }
   if (!settings.slug) {
     openCount = 0;
+    serverTotal = null;
     refreshBadge();
+    await refreshDiscoveredSlugs(gen);
+    if (gen !== generation) return;
     mounted.push(mountEmpty(root, {
       title: "No workspace slug",
-      body: "Set Workspace slug in Settings → Integrations → Plane.",
+      body: discoveredSlugs.length === 0
+        ? "Set Workspace slug in Settings → Integrations → Plane."
+        : `Set Workspace slug in Settings → Integrations → Plane. Found workspaces: ${discoveredSlugs.join(", ")} — enter one as the Workspace slug.`,
     }));
     return;
   }
   if (!isValidSlug(settings.slug)) {
     openCount = 0;
+    serverTotal = null;
     refreshBadge();
     mounted.push(mountBanner(root, {
       tone: "error",
@@ -251,6 +268,7 @@ const paint = async () => {
   mounted.splice(mounted.indexOf(spinner), 1);
   if (projects.length === 0) {
     openCount = 0;
+    serverTotal = null;
     refreshBadge();
     mounted.push(mountEmpty(root, { title: "No projects", body: `Workspace “${slug}” has no projects.` }));
     return;
@@ -306,6 +324,21 @@ const paint = async () => {
   await reload(gen, slug, false);
 };
 
+// Opportunistic workspace auto-discovery for the no-slug empty state: a
+// best-effort slug offer. Any failure (including the expected 404 until
+// upstream PR makeplane/plane#9503 merges) silently keeps the manual
+// workspace-slug settings path.
+async function refreshDiscoveredSlugs(gen: number) {
+  discoveredSlugs = [];
+  try {
+    const result = await apiGet(gen, WORKSPACES_DISCOVERY_PATH);
+    if (result.status !== 200) return;
+    discoveredSlugs = parseDiscoveredWorkspaces(JSON.parse(result.body));
+  } catch {
+    discoveredSlugs = [];
+  }
+}
+
 async function loadAccount(gen: number) {
   const result = await apiGet(gen, "/api/v2/users/me/");
   if (result.status !== 200) {
@@ -350,6 +383,7 @@ async function reload(gen: number, slug: string, append: boolean) {
     page = null;
     selectedId = null;
     openCount = 0;
+    serverTotal = null;
     actionNote = "";
   }
   if (filters.mine && !meId) {
@@ -375,6 +409,7 @@ async function reload(gen: number, slug: string, append: boolean) {
     if (result.status !== 200) throw new Error(`Plane answered ${result.status} for the work-item list.`);
     const parsed = parseWorkItemsEnvelope(JSON.parse(result.body));
     page = parsed.page;
+    if (typeof parsed.totalCount === "number") serverTotal = parsed.totalCount;
     const seen = new Set(rows.map((r) => r.id));
     for (const item of parsed.items) {
       const row = normalizeWorkItem(item);
@@ -385,7 +420,7 @@ async function reload(gen: number, slug: string, append: boolean) {
       }
     }
     // Identifier queries also fetch the exact work item directly: v2 ?search=
-    // matches names only, so PROJ-142 might otherwise miss (#3 spike notes).
+    // matches names only, so PROJ-142 might otherwise miss (issue #3 spike notes).
     if (!append && isIdentifierQuery(filters.search)) {
       const direct = await apiGet(gen, workItemByIdentifierPath(slug, filters.search.trim()));
       if (direct.status === 200) {
@@ -404,7 +439,7 @@ async function reload(gen: number, slug: string, append: boolean) {
     renderResults(gen, "", false);
   } catch (error) {
     if (gen !== generation) return;
-    const text = error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error);
+    const text = describeError(error);
     renderResults(gen, text === "Error: stale" ? "" : text, text !== "Error: stale");
   }
 }
@@ -418,12 +453,7 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
   if (error) {
     results.push(mountBanner(listBox, { tone: "error", title: "Could not load work items", body: error }));
     if (showRetry) {
-      results.push(mountButton(footerBox, {
-        label: "Retry",
-        variant: "outline",
-        size: "sm",
-        onClick: () => void reload(gen, settings.slug, false),
-      }));
+      results.push(footerButton("Retry", () => void reload(gen, settings.slug, false)));
     }
     return;
   }
@@ -439,43 +469,14 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     },
   }));
   const picked = selectedRow();
-  results.push(mountButton(footerBox, {
-    label: "Open in Plane",
-    variant: "outline",
-    size: "sm",
-    disabled: !picked,
-    onClick: () => {
-      if (picked) void host.openUrl(picked.url);
-    },
-  }));
-  results.push(mountButton(footerBox, {
-    label: "Attach chip",
-    variant: "outline",
-    size: "sm",
-    disabled: !picked,
-    onClick: () => void attachSelected(gen),
-  }));
-  results.push(mountButton(footerBox, {
-    label: "Start session",
-    variant: "outline",
-    size: "sm",
-    disabled: !picked,
-    onClick: () => void startSessionFromSelected(gen),
-  }));
-  results.push(mountButton(footerBox, {
-    label: "Link to open session",
-    variant: "outline",
-    size: "sm",
-    disabled: !picked,
-    onClick: () => void linkSelected(gen),
-  }));
+  results.push(footerButton("Open in Plane", () => {
+    if (picked) void host.openUrl(picked.url);
+  }, !picked));
+  results.push(footerButton("Attach chip", () => void attachSelected(gen), !picked));
+  results.push(footerButton("Start session", () => void startSessionFromSelected(gen), !picked));
+  results.push(footerButton("Link to open session", () => void linkSelected(gen), !picked));
   if (page !== null) {
-    results.push(mountButton(footerBox, {
-      label: "Load more",
-      variant: "outline",
-      size: "sm",
-      onClick: () => void reload(gen, settings.slug, true),
-    }));
+    results.push(footerButton("Load more", () => void reload(gen, settings.slug, true)));
   }
 }
 

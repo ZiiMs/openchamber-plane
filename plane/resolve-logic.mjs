@@ -1,4 +1,4 @@
-// Pure slash-command resolve helpers for ticket #7: argument parsing and
+// Pure slash-command resolve helpers for issue #7: argument parsing and
 // single-work-item unwrapping. No DOM, no SDK, no network — exercised
 // directly by plane/check.mjs. The panel fetches via the v2 direct GET
 // …/work-items/{identifier}/ path (reuse workItemByIdentifierPath from

@@ -1,4 +1,4 @@
-// Pure Plane browse helpers for ticket #5: request paths, query shapes,
+// Pure Plane browse helpers for issue #5: request paths, query shapes,
 // v2 envelope branching, row normalization, browse URLs, rate-limit backoff.
 // No DOM, no SDK, no network — exercised directly by plane/check.mjs.
 // Field/value guesses that still need a tenant are marked needs-tenant.
@@ -24,12 +24,24 @@ export function workItemByIdentifierPath(slug, identifier) {
   return `/api/v2/workspaces/${slug}/work-items/${identifier}/`;
 }
 
+// Opportunistic workspace auto-discovery for issue #8: GET this path on
+// connect/settings-load and offer the slugs when it answers. It 404s until
+// upstream PR makeplane/plane#9503 merges (issue #3 spike notes §5), so any
+// failure silently keeps the manual workspace-slug settings path. On success
+// the PR returns a plain array of {id, name, slug}; anything else is [].
+export const WORKSPACES_DISCOVERY_PATH = "/api/v1/users/me/workspaces/";
+
+export function parseDiscoveredWorkspaces(payload) {
+  if (!Array.isArray(payload)) return [];
+  return payload.map((entry) => (typeof entry?.slug === "string" ? entry.slug : "")).filter((slug) => isValidSlug(slug));
+}
+
 export function isValidSlug(slug) {
   return typeof slug === "string" && /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 
 // PREFIX-123, e.g. PROJ-142. Such queries also get a direct by-identifier
-// fetch because v2 ?search= matches names only (#3 spike notes).
+// fetch because v2 ?search= matches names only (issue #3 spike notes).
 export function isIdentifierQuery(value) {
   return typeof value === "string" && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(value.trim());
 }
@@ -45,16 +57,21 @@ export function workItemsQuery({ search, stateGroup, assigneeId, offset, perPage
 }
 
 // Branch on pagination.style: offset {data,next,total_count} vs cursor
-// {data,next_cursor,has_more} (#3 spike notes). page null = no more pages.
+// {data,next_cursor,has_more} (issue #3 spike notes). page null = no more pages.
+// totalCount carries the v2 envelope total_count (all matching rows,
+// including pages not yet loaded) for the rail badge; null when the
+// response does not carry one, and callers fall back to loaded-row counts.
 export function parseWorkItemsEnvelope(payload) {
   const items = Array.isArray(payload?.data) ? payload.data : [];
+  const totalCount =
+    typeof payload?.total_count === "number" && Number.isFinite(payload.total_count) ? payload.total_count : null;
   const style = payload?.pagination?.style;
   if (style === "cursor") {
     const next = typeof payload.next_cursor === "string" && payload.has_more ? payload.next_cursor : null;
-    return { items, page: next === null ? null : { kind: "cursor", next } };
+    return { items, page: next === null ? null : { kind: "cursor", next }, totalCount };
   }
   const next = typeof payload?.next === "number" ? payload.next : null;
-  return { items, page: next === null ? null : { kind: "offset", next } };
+  return { items, page: next === null ? null : { kind: "offset", next }, totalCount };
 }
 
 // Defensive: expanded state object, sparse state_id, or bust.

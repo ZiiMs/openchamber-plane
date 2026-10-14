@@ -1,4 +1,4 @@
-# Manual verification — ticket #4 scaffold (no tenant credentials in dev)
+# Manual verification — issue #4 scaffold (no tenant credentials in dev)
 
 No automated seam exists beyond `node plane/check.mjs` (bundler + SDK
 manifest parse). A human with a Plane Cloud tenant walks this list once.
@@ -7,6 +7,8 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
 
 - [ ] `node plane/check.mjs` prints CHECK PASSED.
 - [ ] Settings → Extensions → Add folder `.../plane` succeeds; rail icon appears.
+- [ ] The Extension pages menu offers Plane full-screen (the page reuses
+      `panel.entry`; `contributes.page` is `true`).
 - [ ] Install approval dialog lists capabilities `prompt`, `sessions`, `network`
       (network follows from the integration) and no others.
 
@@ -25,13 +27,29 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
 
 - [ ] Set Workspace slug + Default project, close and reopen Settings: values persist.
 
-## Browse (ticket #5)
+## Workspace auto-discovery (issue #8)
+
+Pure seam without a tenant: `node plane/check.mjs` covers the discovery
+path (`WORKSPACES_DISCOVERY_PATH`) and slug parsing
+(`parseDiscoveredWorkspaces`: plain array of `{id, name, slug}`, invalid
+slugs dropped, anything else `[]`). A human with a Plane Cloud tenant
+walks this list once:
+
+- [ ] With no Workspace slug set, the panel tries `GET
+      /api/v1/users/me/workspaces/` and names the discovered slugs in the
+      "No workspace slug" empty state (today this GET 404s — upstream PR
+      makeplane/plane#9503 is unmerged — so the empty state stays manual).
+- [ ] Any discovery failure (404, unparsable body) leaves the manual
+      Workspace-slug settings path untouched.
+
+## Browse (issue #5)
 
 Pure seams without a tenant: `node plane/check.mjs` covers request
 paths/query shapes (`projectsPath`, `workItemsPath`,
 `workItemByIdentifierPath`, `search`/`state_group__in`/`assignee_id`/
 `expand=state,assignees`/`fields`), both v2 envelope styles
-(`pagination.style` offset vs cursor), row normalization
+(`pagination.style` offset vs cursor) plus `total_count` for the rail
+badge, row normalization
 (identifier/title/state), canonical browse URLs, and backoff delays.
 A human with a Plane Cloud tenant walks this list once:
 
@@ -50,15 +68,17 @@ A human with a Plane Cloud tenant walks this list once:
       the "Unknown workspace slug" error — never a spinner hang.
 - [ ] Heavy paging degrades to a rate-limit notice plus Retry, then recovers.
 
-## Attach (ticket #6)
+## Attach (issue #6)
 
 Pure seams without a tenant: `node plane/check.mjs` covers chip shaping
 (`providerId` plane, id = work item identifier, title, canonical browse URL;
 clamped to host limits id<=128, title<=200, url<=2000), new-session text
 (identifier, title, link, state), open-work-item count (skips the
-completed/cancelled state groups), and badge values (null when disconnected
+completed/cancelled state groups; unknown groups still count as open),
+and badge values (the v2 envelope `total_count` when the list response
+carries it, else the loaded-row open count; null when disconnected
 or zero, clamped to 999). `onResolve` still returns null — slash-command
-identifier resolution is ticket #7. A human with a Plane Cloud tenant walks
+identifier resolution is issue #7. A human with a Plane Cloud tenant walks
 this list once:
 
 - [ ] Selecting a work-item row enables Attach chip, Start session,
@@ -72,7 +92,7 @@ this list once:
 - [ ] The rail icon shows the open work item count while browsing; it
       clears on disconnect, on an empty list, and when no slug is set.
 
-## Command attach + remembered mapping (ticket #7)
+## Command attach + remembered mapping (issue #7)
 
 Pure seams without a tenant: `node plane/check.mjs` covers command-arg
 parsing (`parseCommandArgs`: trims, reads the first token, rejects blanks /
@@ -103,7 +123,7 @@ Cloud tenant walks this list once:
       `/plane <id>` command-attach → chip on the chat box → session with
       the chip attached.
 
-## Known needs-tenant risks (from #3, extended on #5)
+## Known needs-tenant risks (from issue #3, extended on issue #5)
 
 - Canonical web base for browse URLs is assumed
   `https://app.plane.so`; fix `PLANE_WEB_BASE` in `plane/browse-logic.mjs`
@@ -116,11 +136,11 @@ Cloud tenant walks this list once:
 - `Default project` matches by project id first, then name; confirm which
   the settings field actually holds.
 
-## Known needs-tenant risks (from #3)
+## Known needs-tenant risks (from issue #3)
 
 - Authorize/token URLs use the generic OAuth paths
   (`/auth/o/authorize/`, `/auth/o/token/`). If the host flow expects the
   Plane-app consent path (`/auth/o/authorize-app/` + `app_installation_id`
   exchange), update `plane/package.json` and re-run the bundler + check.
 - `read` (global) is requested alongside the fine-grained read scopes so
-  `/api/v2/users/me/` accepts the OAuth token (decided on #2).
+  `/api/v2/users/me/` accepts the OAuth token (decided on issue #2).
