@@ -5,7 +5,7 @@
   "openchamber": {
     "apiVersion": 1,
     "contributes": {
-      "panel": { "id": "plane", "name": "Plane", "icon": "task", "entry": "panel/index.html" },
+      "panel": { "id": "plane", "name": "Plane", "icon": "plane.svg", "entry": "panel/index.html" },
       "page": true,
       "attach": "dialog",
       "capabilities": ["prompt", "sessions"],
