@@ -121,6 +121,26 @@ export function normalizeStates(payload) {
   return items.map(normalizeState).filter((state) => state !== null);
 }
 
+// Sections for the grouped list (issue #11): the project's workflow order
+// first, work items whose state is not in that list last.
+export function groupRowsByState(rows, states) {
+  const rank = new Map(states.map((state, index) => [state.name, index]));
+  const sections = new Map();
+  for (const row of rows) {
+    const name = row.state || "—";
+    const section = sections.get(name);
+    if (section) section.rows.push(row);
+    else sections.set(name, { state: name, rows: [row] });
+  }
+  return [...sections.values()].sort(
+    (a, b) => (rank.get(a.state) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.state) ?? Number.MAX_SAFE_INTEGER)
+  );
+}
+
+export function sectionLabel(section) {
+  return `${section.state} · ${section.rows.length}`;
+}
+
 // Defensive: expanded state object, sparse state_id, or bust.
 export function normalizeWorkItem(raw) {
   if (!raw || typeof raw !== "object") return null;

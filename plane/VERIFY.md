@@ -148,6 +148,24 @@ state wiring. A human with a Plane Cloud tenant walks this list once:
 - [ ] The account line reads "Connected as <name>", or "Plane user" — never
       "Connected as .".
 
+## Grouped list (issue #11)
+
+Pure seams without a tenant: `node plane/check.mjs` covers section bucketing,
+section order (the project's workflow order, unreadable states last), row order
+inside a section, and the section label. A human with a Plane Cloud tenant
+walks this list once:
+
+- [ ] The list renders as sections, one per state, in the project's workflow
+      order, with anything whose state cannot be read in a final section.
+- [ ] Each header reads "<state> · <count>", and the count matches the rows
+      shown under it.
+- [ ] Rows stay newest-first inside a section.
+- [ ] Load more appends rows into their own sections and the counts grow.
+- [ ] Arrow keys move within a section, Tab moves between sections, and the
+      selected row stays highlighted across sections.
+- [ ] Selecting one state in the State control shows a flat list with no
+      headers.
+
 ## Known needs-tenant risks (from issue #3, extended on issue #5)
 
 - Canonical web base for browse URLs is assumed

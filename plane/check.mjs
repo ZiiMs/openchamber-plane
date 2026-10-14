@@ -55,6 +55,7 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "/states/", // states come from the project's own workflow (issue #10)
     "order_by", // states are asked for in workflow order
     "Plane user", // an empty account name falls back instead of "Connected as ."
+    "plane-section", // the grouped list renders per-state section headings
     "assignee_id", // work-item list carries the assigned-to-me filter
     "/work-items/", // work-item list / by-identifier paths
     "users/me/workspaces", // opportunistic workspace auto-discovery path
@@ -136,6 +137,27 @@ else {
   eq(browse.stateTone("unstarted"), "neutral", "unstarted is neutral");
   eq(browse.stateTone(undefined), "neutral", "an unknown state group is neutral");
   eq("STATE_GROUPS" in browse, false, "the state-group constant is gone (issue #10)");
+  // --- Issue #11: sections by state ---
+  // Expected values come from the issue: the project's workflow order, rows
+  // in the order the list loaded them, unreadable states last.
+  const stateList = [
+    { id: "s1", name: "Todo", group: "unstarted", sequence: 15000 },
+    { id: "s2", name: "In Progress", group: "started", sequence: 25000 },
+    { id: "s3", name: "Done", group: "completed", sequence: 35000 },
+  ];
+  const groupedRows = [
+    { id: "a", state: "Done" },
+    { id: "b", state: "In Progress" },
+    { id: "c", state: "Done" },
+    { id: "d", state: "Mystery" },
+    { id: "e", state: "Todo" },
+  ];
+  const sections = browse.groupRowsByState(groupedRows, stateList);
+  eq(sections.map((s) => s.state), ["Todo", "In Progress", "Done", "Mystery"], "sections follow the workflow order, unreadable states last");
+  eq(sections[2].rows.map((r) => r.id), ["a", "c"], "rows keep their order inside a section");
+  eq(browse.groupRowsByState([{ id: "x" }], stateList).at(-1).state, "—", "a row without a state lands last");
+  eq(browse.groupRowsByState([], stateList), [], "no rows, no sections");
+  eq(browse.sectionLabel({ state: "In Progress", rows: [{}, {}] }), "In Progress · 2", "the section label names the state and the loaded rows");
   eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
   eq(browse.rateLimitDelayMs({ retryAfter: "2", attempt: 0 }), 2000, "Retry-After seconds honored");
   eq(browse.rateLimitDelayMs({ retryAfter: "garbage", attempt: 2 }), 4000, "bad Retry-After falls back to exponential");

@@ -21,6 +21,7 @@ import { MAPPING_STORAGE_KEYS, mergeMapping } from "../mapping-logic.mjs";
 import { parseCommandArgs, resolveWorkItem } from "../resolve-logic.mjs";
 import {
   browseUrl,
+  groupRowsByState,
   isIdentifierQuery,
   isValidSlug,
   normalizeStates,
@@ -29,6 +30,7 @@ import {
   parseWorkItemsEnvelope,
   projectsPath,
   rateLimitDelayMs,
+  sectionLabel,
   statesPath,
   statesQuery,
   stateTone,
@@ -495,18 +497,34 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     }
     return;
   }
-  results.push(mountList(listBox, {
+  const onSelect = (id: string) => {
+    selectedId = id;
+    actionNote = "";
+    renderResults(gen, "", false);
+  };
+  const listProps = (items: Row[]) => ({
     ariaLabel: "Plane work items",
     emptyText: "No work items match.",
     selectedId,
     // The state is a pill now, not a second line (issue #10).
-    items: rows.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: { label: r.state, tone: stateTone(r.stateGroup) } })),
-    onSelect: (id) => {
-      selectedId = id;
-      actionNote = "";
-      renderResults(gen, "", false);
-    },
-  }));
+    items: items.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: { label: r.state, tone: stateTone(r.stateGroup) } })),
+    onSelect,
+  });
+  // Sections by state (issue #11); a flat list while a state is filtered.
+  const sections = filters.stateId || rows.length === 0 ? [] : groupRowsByState(rows, states);
+  if (sections.length === 0) {
+    results.push(mountList(listBox, listProps(rows)));
+  } else {
+    for (const section of sections) {
+      const heading = document.createElement("div");
+      heading.className = "plane-section";
+      heading.style.cssText = "margin:10px 0 4px;font-size:0.75rem;color:var(--oc-muted);";
+      heading.textContent = sectionLabel(section);
+      listBox.append(heading);
+      results.push({ dispose: () => heading.remove() });
+      results.push(mountList(listBox, listProps(section.rows)));
+    }
+  }
   const picked = selectedRow();
   results.push(footerButton("Open in Plane", () => {
     if (picked) void host.openUrl(picked.url);
