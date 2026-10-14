@@ -1,0 +1,40 @@
+{
+  "name": "openchamber-plane",
+  "version": "0.1.0",
+  "private": true,
+  "openchamber": {
+    "apiVersion": 1,
+    "contributes": {
+      "panel": { "id": "plane", "name": "Plane", "icon": "task", "entry": "panel/index.html" },
+      "attach": "dialog",
+      "capabilities": ["prompt", "sessions"],
+      "commands": [
+        { "name": "plane", "description": "Attach a Plane work item by identifier, e.g. /plane PROJ-142" }
+      ],
+      "integration": {
+        "name": "Plane",
+        "description": "Browse and attach Plane work items.",
+        "oauth": {
+          "authorizeUrl": "https://api.plane.so/auth/o/authorize/",
+          "tokenUrl": "https://api.plane.so/auth/o/token/",
+          "apiOrigin": "https://api.plane.so",
+          "scopes": [
+            "read",
+            "projects.work_items:read",
+            "projects:read",
+            "projects.states:read",
+            "projects.members:read"
+          ],
+          "account": { "path": "/api/v2/users/me/", "name": "display_name" }
+        },
+        "settings": [
+          { "id": "workspace-slug", "label": "Workspace slug" },
+          { "id": "default-project", "label": "Default project" }
+        ]
+      }
+    }
+  },
+  "devDependencies": {
+    "@openchamber/sdk": "^1.24.0"
+  }
+}
