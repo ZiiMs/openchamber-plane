@@ -42,5 +42,51 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
   if (/^\s*(import|export)\s/m.test(src)) fail("panel/main.js must be a classic script, not an ES module");
   else ok("panel/main.js is a classic script");
   if (!src.includes("Not connected")) fail("panel/main.js missing not-connected empty state"); else ok("not-connected empty state present");
+  for (const needle of [
+    "state_group__in", // work-item list carries the state-group filter
+    "assignee_id", // work-item list carries the assigned-to-me filter
+    "/work-items/", // work-item list / by-identifier paths
+    "/browse/", // rows link toward the canonical browse URL
+    "Assigned to me", // assigned-to-me control
+    "Load more", // paged lists
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing browse wiring: ${needle}`); else ok(`browse wiring present: ${needle}`);
+}
+
+// --- Ticket #5: pure browse-logic seam (no network) ---
+// Expected values come from the ticket + #3 spike notes, not from the code.
+const browse = await import("./browse-logic.mjs").catch(() => null);
+if (!browse) fail("plane/browse-logic.mjs missing");
+else {
+  const eq = (actual, expected, label) => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    else ok(label);
+  };
+  eq(browse.projectsPath("acme"), "/api/v2/workspaces/acme/projects/", "projects path");
+  eq(browse.workItemsPath("acme", "abc"), "/api/v2/workspaces/acme/projects/abc/work-items/", "work-items path");
+  eq(browse.workItemByIdentifierPath("acme", "PROJ-118"), "/api/v2/workspaces/acme/work-items/PROJ-118/", "by-identifier path");
+  eq(browse.isValidSlug("acme-1_2"), true, "slug accepts letters/digits/_/-");
+  for (const bad of ["", "has space", "a/b", "a:b"]) eq(browse.isValidSlug(bad), false, `slug rejects ${JSON.stringify(bad)}`);
+  eq(browse.isIdentifierQuery("PROJ-142"), true, "identifier query detected");
+  for (const not of ["just words", "PROJ-", "142", "PROJ 142"]) eq(browse.isIdentifierQuery(not), false, `not an identifier: ${JSON.stringify(not)}`);
+  eq(browse.browseUrl("acme", "PROJ-142"), "https://app.plane.so/acme/browse/PROJ-142/", "canonical browse URL");
+  const base = browse.workItemsQuery({});
+  eq(base.expand, "state,assignees", "query expands state+assignees");
+  eq(typeof base.fields === "string" && base.fields.split(",").includes("state"), true, "query trims fields incl. state");
+  eq(base.per_page, "25", "query pages at 25");
+  eq("search" in base || "state_group__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
+  const full = browse.workItemsQuery({ search: "api crash", stateGroup: "started", assigneeId: "u1", offset: "25" });
+  eq([full.search, full.state_group__in, full.assignee_id, full.offset], ["api crash", "started", "u1", "25"], "query carries search/filter/offset");
+  const off = browse.parseWorkItemsEnvelope({ data: [{ id: "a" }], next: 25, total_count: 60, pagination: { style: "offset" } });
+  eq([off.items.length, off.page], [1, { kind: "offset", next: 25 }], "offset envelope page");
+  eq(browse.parseWorkItemsEnvelope({ data: [], next: null, total_count: 0, pagination: { style: "offset" } }).page, null, "offset envelope end");
+  const cur = browse.parseWorkItemsEnvelope({ data: [{ id: "a" }], next_cursor: "abc", has_more: true, pagination: { style: "cursor" } });
+  eq([cur.items.length, cur.page], [1, { kind: "cursor", next: "abc" }], "cursor envelope page");
+  eq(browse.parseWorkItemsEnvelope({ data: [], next_cursor: null, has_more: false, pagination: { style: "cursor" } }).page, null, "cursor envelope end");
+  eq(browse.normalizeWorkItem({ id: "u", name: "Fix login", identifier: "ACME-7", state: { name: "In Progress", group: "started" } }),
+    { id: "u", identifier: "ACME-7", title: "Fix login", state: "In Progress" }, "row shows identifier, title, state");
+  eq(browse.normalizeWorkItem({ id: "u", name: "Sparse", state_id: "s1" }).state, "s1", "sparse state falls back to state_id");
+  eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
+  eq(browse.rateLimitDelayMs({ retryAfter: "2", attempt: 0 }), 2000, "Retry-After seconds honored");
+  eq(browse.rateLimitDelayMs({ retryAfter: "garbage", attempt: 2 }), 4000, "bad Retry-After falls back to exponential");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");
