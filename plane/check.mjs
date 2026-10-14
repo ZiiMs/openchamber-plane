@@ -88,6 +88,12 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "plane-rich", // the description renders through the allow-list (issue #13)
   ]) if (!src.includes(needle)) fail(`panel/main.js missing detail wiring: ${needle}`); else ok(`detail wiring present: ${needle}`);
   for (const needle of [
+    "openPopover", // the rail's detail pops out of the panel into a host frame (issue #16)
+    "plane-detail-", // a fresh popover id per opening
+    "popovers", // feature-detected, so an older host keeps the in-frame overlay
+    "setHeight", // the popped-out card is as tall as its content
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing popover wiring: ${needle}`); else ok(`popover wiring present: ${needle}`);
+  for (const needle of [
     "onResolve", // slash command answers instead of stubbing null
     "args", // resolve reads the command args for the work item identifier
     "plane.workspace-slug", // remembered workspace slug via host.storage cache

@@ -11,6 +11,9 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
       `panel.entry`; `contributes.page` is `true`).
 - [ ] Install approval dialog lists capabilities `prompt`, `sessions`, `network`
       (network follows from the integration) and no others.
+- [ ] The host is OpenChamber 2.x, which advertises guest popovers
+      (`ready.features.popovers`). On an older host the rail keeps the in-frame
+      detail modal (issue #12) — nothing else changes.
 
 ## Connect
 
@@ -183,11 +186,38 @@ once:
       the list.
 - [ ] The footer carries Open in Plane, Attach chip, Start session, and Link to
       open session; the panel's own footer action bar is gone.
-- [ ] On the rail the modal uses the panel width; on the full page it centres
-      at a readable width.
+- [ ] On the rail the detail pops out of the panel now — see "Popped-out detail"
+      below; on the full page it centres at a readable width.
 - [ ] A work item archived after the list loaded shows "Could not load this
       work item" with Open in Plane still offered.
 - [ ] Load more and Retry still work from the panel footer.
+
+## Popped-out detail (issue #16)
+
+The rail is a few hundred pixels wide, so the same card is drawn by a host
+popover instead: `host.openPopover` anchors it to the row and the host mounts
+`panel.entry` again with `ready.surface === "popover"` and the work item in
+`ready.popover.data`. Pure seam without a tenant: `node plane/check.mjs` covers
+the panel bundle wiring (`openPopover`, the `plane-detail-` id prefix, the
+`popovers` feature check that keeps an older host on the in-frame modal, and
+`setHeight`). A human with a Plane Cloud tenant walks this list once:
+
+- [ ] Clicking a work item on the rail opens its detail outside the panel,
+      anchored to the row and floating over the whole window (at most 640 wide
+      and 480 tall; the host shrinks it to fit a small window and flips or
+      shifts it to stay on screen).
+- [ ] The card carries the same fields, formatted description and footer as the
+      in-frame modal (issue #12/#13); Close, Escape and a click outside dismiss
+      it, and the row behind stays highlighted.
+- [ ] Attach chip / Start session / Link to open session work from the card and
+      the card goes away after; Open in Plane opens the browser.
+- [ ] A short work item's card is only as tall as its content; a long
+      description scrolls inside the 480px cap.
+- [ ] Scrolling the list, switching project or opening a host dialog dismisses
+      the card; picking another row replaces it.
+- [ ] On a host without popover support (`ready.features.popovers` absent) the
+      rail keeps the in-frame overlay from issue #12, and the full-screen page
+      keeps it on every host.
 
 ## Formatted description (issue #13)
 

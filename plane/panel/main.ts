@@ -1,4 +1,5 @@
 import { connectHost, HostRequestError } from "@openchamber/sdk";
+import type { GuestHostSurface, GuestPopoverContext, HostReadyContext } from "@openchamber/sdk";
 import {
   applyHostReady,
   mountBadge,
@@ -62,6 +63,9 @@ type Detail = {
   description: string;
 };
 type Page = { kind: "offset" | "cursor"; next: number | string } | null;
+// What the detail card needs from a row. The panel's Row satisfies it, and the
+// popped-out detail frame rebuilds it from ready.popover.data (issue #16).
+type CardRow = { identifier: string; title: string; state: string; url: string };
 
 const REQUEST_TIMEOUT_MS = 20000;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -146,20 +150,18 @@ async function persistMapping(mapping: { slug: string; defaultProject: string })
 
 const selectedRow = () => rows.find((r) => r.id === selectedId) ?? null;
 
-const selectedChip = () => {
-  const row = selectedRow();
-  if (!row) return null;
-  return {
-    row,
-    chip: buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title }),
-  };
-};
-
 const showNotice = (gen: number, tone: "info" | "success" | "error", note: string) => {
   if (gen !== generation) return;
   actionTone = tone;
   actionNote = note;
   renderResults(gen, "", false);
+};
+
+// What an action reports goes into the panel's list; the popped-out detail has
+// no list, so it toasts instead (issue #16).
+const notify = (gen: number, tone: "info" | "success" | "error", note: string) => {
+  if (listBox) showNotice(gen, tone, note);
+  else void host.toast({ kind: tone, message: note }).catch(() => {});
 };
 
 const describeError = (error: unknown) =>
@@ -168,56 +170,64 @@ const describeError = (error: unknown) =>
 const footerButton = (label: string, onClick: () => void, disabled = false) =>
   mountButton(footerBox, { label, variant: "outline", size: "sm", disabled, onClick });
 
-async function attachSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+// The detail card's actions take the row they were drawn for, so the card works
+// the same in the panel and in the popped-out frame (issue #16).
+const chipFor = (row: CardRow) =>
+  buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title });
+
+async function attachRow(gen: number, row: CardRow) {
   try {
-    await host.attach(found.chip);
+    await host.attach(chipFor(row));
     if (gen !== generation) return;
-    await host.close(); // dismisses the attach dialog; no-op on the rail
-    showNotice(gen, "success", `Attached ${found.row.identifier} to the chat box.`);
+    await host.close(); // dismisses the attach dialog; closes the calling popover
+    notify(gen, "success", `Attached ${row.identifier} to the chat box.`);
   } catch (error) {
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
-async function startSessionFromSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+async function startSessionFor(gen: number, row: CardRow) {
+  const chip = chipFor(row);
   const text = buildSessionText({
-    identifier: found.row.identifier,
-    title: found.row.title,
-    url: found.chip.url,
-    state: found.row.state,
+    identifier: row.identifier,
+    title: row.title,
+    url: chip.url,
+    state: row.state,
   });
   try {
-    const result = await host.startSession({ ...found.chip, text });
+    const result = await host.startSession({ ...chip, text });
     if (gen !== generation) return;
-    if (result.sessionId) showNotice(gen, "success", `Started a session for ${found.row.identifier}.`);
-    else showNotice(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
+    if (result.sessionId) {
+      void host.close().catch(() => {});
+      notify(gen, "success", `Started a session for ${row.identifier}.`);
+    } else notify(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
   } catch (error) {
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
-async function linkSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+async function linkRow(gen: number, row: CardRow) {
   try {
-    await host.sessionLink(found.chip);
-    showNotice(gen, "success", `Linked ${found.row.identifier} to the open session.`);
+    await host.sessionLink(chipFor(row));
+    void host.close().catch(() => {});
+    notify(gen, "success", `Linked ${row.identifier} to the open session.`);
   } catch (error) {
     if (error instanceof HostRequestError && error.code === "NO_SESSION") {
-      showNotice(gen, "info", "No open session — open or start a session first, then link.");
+      notify(gen, "info", "No open session — open or start a session first, then link.");
       return;
     }
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
 // Closing hands focus back to the selected row: the re-render that opened the
 // modal rebuilt it, so the live row is found in the list rather than remembered.
+// A popped-out detail is host chrome, so it only needs telling (issue #16).
 const closeDetail = () => {
+  if (openPopoverId) {
+    void host.closePopover(openPopoverId).catch(() => {});
+    openPopoverId = null;
+  }
   if (!modal) return;
   modal.dispose();
   modal = null;
@@ -284,34 +294,17 @@ const detailRow = (label: string, value: string | null, pill?: { label: string; 
   return row;
 };
 
-async function openDetail(gen: number, row: Row) {
-  closeDetail();
-  const overlay = document.createElement("div");
-  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
-  const card = document.createElement("div");
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
-  card.tabIndex = -1;
-  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
-  overlay.append(card);
-  document.body.append(overlay);
-  modal = { dispose: () => overlay.remove() };
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) closeDetail();
-  });
-  overlay.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDetail();
-  });
-  card.focus();
-
+// Detail card (issue #12), in-frame fallback (issue #16) and popped-out frame
+// (issue #16) all fill this one card, so the fields, the formatted description
+// and the footer actions cannot drift apart.
+async function fillDetailCard(gen: number, row: CardRow, card: HTMLElement, close: () => void, projectName: string | null = null) {
   const head = document.createElement("div");
   head.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
   const heading = document.createElement("div");
   heading.style.cssText = "flex:1 1 auto;min-width:0;font-weight:600;";
   heading.textContent = row.title;
   head.append(heading);
-  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: () => closeDetail() });
+  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: close });
   card.append(head);
   const key = document.createElement("div");
   key.style.cssText = "font-family:var(--oc-mono,monospace);font-size:0.75rem;color:var(--oc-muted);";
@@ -331,7 +324,7 @@ async function openDetail(gen: number, row: Row) {
   }
   spinner.dispose();
   if (gen !== generation) {
-    closeDetail();
+    close();
     return;
   }
   if (failure) {
@@ -352,7 +345,8 @@ async function openDetail(gen: number, row: Row) {
       detailRow("Target", detail.targetDate),
       detailRow("Created", detail.createdAt),
       detailRow("Updated", detail.updatedAt),
-      detailRow("Project", projects.find((p) => p.id === detail.projectId)?.name ?? null),
+      // The popped-out frame has no project list, so the panel hands the name in.
+      detailRow("Project", projectName ?? projects.find((p) => p.id === detail!.projectId)?.name ?? null),
       detailRow("Labels", detail.labels.join(", ") || null),
     ]) {
       if (node) body.append(node);
@@ -372,9 +366,101 @@ async function openDetail(gen: number, row: Row) {
   footer.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
   card.append(footer);
   mountButton(footer, { label: "Open in Plane", variant: "outline", size: "sm", onClick: () => void host.openUrl(row.url) });
-  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachSelected(gen) });
-  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFromSelected(gen) });
-  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkSelected(gen) });
+  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachRow(gen, row) });
+  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFor(gen, row) });
+  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkRow(gen, row) });
+}
+
+// The kit has no modal primitive, so the in-frame detail is composed from the
+// host theme tokens; the row click that selects the row opens it.
+function inlineDetail(gen: number, row: CardRow) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
+  const card = document.createElement("div");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
+  card.tabIndex = -1;
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
+  overlay.append(card);
+  document.body.append(overlay);
+  modal = { dispose: () => overlay.remove() };
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeDetail();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetail();
+  });
+  card.focus();
+  void fillDetailCard(gen, row, card, closeDetail);
+}
+
+// The host caps an extension popover at 640x480 and shrinks it to fit the window.
+const POPOVER_WIDTH = 640;
+const POPOVER_HEIGHT = 480;
+
+// The rail is a few hundred pixels wide, so a row's detail pops out of it: the
+// host mounts this same entry again in a floating frame over the window,
+// anchored to the row, and hands it the work item through ready.popover (#16).
+async function openPopoverDetail(row: CardRow) {
+  const anchor = listBox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+  if (!anchor) return false;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const id = `plane-detail-${++popoverSeq}`;
+  try {
+    await host.openPopover({
+      id,
+      anchor: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      width: POPOVER_WIDTH,
+      height: POPOVER_HEIGHT,
+      side: "left",
+      focus: true,
+      data: {
+        identifier: row.identifier,
+        title: row.title,
+        state: row.state,
+        projectName: projects.find((p) => p.id === filters.projectId)?.name ?? null,
+      },
+    });
+  } catch {
+    // An older host, a host dialog in the way, or an anchor the host will not
+    // take: the in-frame overlay still shows the detail.
+    return false;
+  }
+  openPopoverId = id;
+  return true;
+}
+
+async function openDetail(gen: number, row: Row) {
+  closeDetail();
+  if (surface === "panel" && features?.popovers && (await openPopoverDetail(row))) return;
+  inlineDetail(gen, row);
+}
+
+// The popped-out detail's own frame (issue #16): the host loads this entry
+// again with ready.surface "popover" and the work item in ready.popover.data,
+// and paints the card's border, radius, shadow and background itself.
+async function paintDetailPopover() {
+  const data = popover?.data as { identifier?: unknown; title?: unknown; state?: unknown; projectName?: unknown } | null | undefined;
+  const identifier = typeof data?.identifier === "string" ? data.identifier : "";
+  if (!identifier || !settings.slug) {
+    void host.close().catch(() => {});
+    return;
+  }
+  const row: CardRow = {
+    identifier,
+    title: typeof data?.title === "string" && data.title ? data.title : identifier,
+    state: typeof data?.state === "string" ? data.state : "",
+    url: browseUrl(settings.slug, identifier),
+  };
+  const card = document.createElement("div");
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:14px;box-sizing:border-box;";
+  document.body.append(card);
+  await fillDetailCard(generation, row, card, () => void host.close().catch(() => {}), typeof data?.projectName === "string" ? data.projectName : null);
+  // The host adds the card's border to this and clamps it to POPOVER_HEIGHT, so
+  // a short work item does not leave a mostly empty card.
+  void host.setHeight(Math.ceil(card.getBoundingClientRect().height)).catch(() => {});
 }
 
 let generation = 0;
@@ -387,6 +473,13 @@ let projects: Array<{ id: string; name: string }> = [];
 let states: State[] = [];
 let stateSelect: ReturnType<typeof mountSelect> | null = null;
 let modal: { dispose: () => void } | null = null;
+// Where the host mounted this frame, and what it advertises: the detail card
+// pops out of the panel only on a rail frame whose host has popovers (#16).
+let surface: GuestHostSurface = "panel";
+let popover: GuestPopoverContext | null = null;
+let features: HostReadyContext["features"];
+let popoverSeq = 0;
+let openPopoverId: string | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
@@ -399,6 +492,7 @@ let statusNote = "";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const paint = async () => {
+  if (surface === "popover") return; // the popped-out detail paints itself (#16)
   const gen = ++generation;
   clear(mounted);
   clear(results);
@@ -730,6 +824,9 @@ function renderFatal(message: string) {
 
 host.onReady((ctx) => {
   applyHostReady(ctx, document.documentElement);
+  surface = ctx.surface;
+  popover = ctx.popover ?? null;
+  features = ctx.features;
   if (ctx.connection) {
     connected = ctx.connection.connected;
     account = ctx.connection.account ?? null;
@@ -739,9 +836,14 @@ host.onReady((ctx) => {
     defaultProject: (ctx.settings?.["default-project"] ?? "").trim(),
   };
   // One paint after the storage read so the first render already uses the
-  // remembered mapping; returning users are not asked twice.
+  // remembered mapping; returning users are not asked twice. The popped-out
+  // detail frame reads the same mapping and paints only its card (issue #16).
   void (async () => {
     settings = mergeMapping(fromSettings, await readStoredMapping());
+    if (surface === "popover") {
+      void paintDetailPopover();
+      return;
+    }
     void persistMapping(settings);
     void paint();
   })();
