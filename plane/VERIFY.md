@@ -71,7 +71,37 @@ this list once:
       first, then link." instead of a raw error.
 - [ ] The rail icon shows the open work item count while browsing; it
       clears on disconnect, on an empty list, and when no slug is set.
-- [ ] `/plane PROJ-142` still resolves to nothing (null) pending #7.
+
+## Command attach + remembered mapping (ticket #7)
+
+Pure seams without a tenant: `node plane/check.mjs` covers command-arg
+parsing (`parseCommandArgs`: trims, reads the first token, rejects blanks /
+prose / bare numbers / non-strings, keeps the typed case), single-item
+unwrapping (`resolveWorkItem`: bare item vs `{data:[…]}` vs `{data:{…}}`
+envelopes, null when nothing is attachable), the remembered-mapping merge
+(`mergeMapping`: settings win, storage fills blanks per field), and the
+panel bundle wiring (`onResolve` reads `args` and fetches the v2 direct GET
+`…/work-items/{identifier}/` path; `plane.workspace-slug` /
+`plane.default-project` cached via `host.storage`). A human with a Plane
+Cloud tenant walks this list once:
+
+- [ ] `/plane PROJ-142` (a scratch-workspace identifier) attaches the work
+      item as a chat-box chip without opening the panel; the chip
+      deep-links to `{web-base}/{slug}/browse/{identifier}/`.
+- [ ] `/plane NOPE-999` and `/plane hello` resolve to nothing-found: no
+      chip and no error toast (the host shows its short notice).
+- [ ] `/plane PROJ-142` with no workspace slug set resolves to
+      nothing-found, not an error.
+- [ ] Set Workspace slug + Default project, fully restart the host, reopen:
+      browse still targets the same workspace/project without re-entering
+      anything (the storage cache filled the blanks).
+- [ ] Change Workspace slug and Default project: browse re-targets (project
+      list plus rows come from the new workspace) and `/plane <id>`
+      resolves against the new workspace.
+- [ ] Full walk-through on a scratch workspace, in order: connect → browse
+      (search plus state-group filter surface the work item) →
+      `/plane <id>` command-attach → chip on the chat box → session with
+      the chip attached.
 
 ## Known needs-tenant risks (from #3, extended on #5)
 

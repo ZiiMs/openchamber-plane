@@ -17,6 +17,8 @@ import {
   buildSessionText,
   isOpenWorkItem,
 } from "../attach-logic.mjs";
+import { MAPPING_STORAGE_KEYS, mergeMapping } from "../mapping-logic.mjs";
+import { parseCommandArgs, resolveWorkItem } from "../resolve-logic.mjs";
 import {
   browseUrl,
   isIdentifierQuery,
@@ -84,6 +86,36 @@ async function apiGetWithBackoff(gen: number, path: string, query?: Record<strin
 const refreshBadge = () => {
   void host.setBadge(badgeForOpenCount(connected, openCount)).catch(() => {});
 };
+
+// Remembered mapping (#7): workspace slug + default project persist across
+// restarts via the host.storage cache. Reads merge settings-over-storage
+// (mergeMapping); writes update both. The cache is best-effort: a storage
+// failure leaves the in-memory settings untouched.
+async function readStoredMapping() {
+  try {
+    const [slug, defaultProject] = await Promise.all([
+      host.storage.get(MAPPING_STORAGE_KEYS.slug),
+      host.storage.get(MAPPING_STORAGE_KEYS.defaultProject),
+    ]);
+    return {
+      slug: typeof slug === "string" ? slug : "",
+      defaultProject: typeof defaultProject === "string" ? defaultProject : "",
+    };
+  } catch {
+    return { slug: "", defaultProject: "" };
+  }
+}
+
+async function persistMapping(mapping: { slug: string; defaultProject: string }) {
+  try {
+    await Promise.all([
+      host.storage.set(MAPPING_STORAGE_KEYS.slug, mapping.slug),
+      host.storage.set(MAPPING_STORAGE_KEYS.defaultProject, mapping.defaultProject),
+    ]);
+  } catch {
+    // Ignore: settings stay the source of truth for this run.
+  }
+}
 
 const selectedRow = () => rows.find((r) => r.id === selectedId) ?? null;
 
@@ -461,21 +493,30 @@ function renderFatal(message: string) {
 
 host.onReady((ctx) => {
   applyHostReady(ctx, document.documentElement);
-  settings = {
-    slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
-    defaultProject: (ctx.settings?.["default-project"] ?? "").trim(),
-  };
   if (ctx.connection) {
     connected = ctx.connection.connected;
     account = ctx.connection.account ?? null;
   }
-  void paint();
+  const fromSettings = {
+    slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
+    defaultProject: (ctx.settings?.["default-project"] ?? "").trim(),
+  };
+  // One paint after the storage read so the first render already uses the
+  // remembered mapping; returning users are not asked twice.
+  void (async () => {
+    settings = mergeMapping(fromSettings, await readStoredMapping());
+    void persistMapping(settings);
+    void paint();
+  })();
 });
 host.onSettings((next) => {
+  // An explicit settings change is the truth (blanks clear the cache too),
+  // so shape it directly, persist both keys, and re-target browse + resolve.
   settings = {
     slug: (next?.["workspace-slug"] ?? "").trim(),
     defaultProject: (next?.["default-project"] ?? "").trim(),
   };
+  void persistMapping(settings);
   void paint();
 });
 let previousConnection: string | undefined;
@@ -488,5 +529,20 @@ host.onConnection((connection) => {
   void paint();
 });
 
-// Work item identifier resolution lands in #7; until then the command finds nothing.
-host.onResolve(async () => null);
+// Slash command: "/plane PROJ-142" attaches that work item without opening
+// the panel. Unknown/bad identifiers resolve to null (nothing found, no
+// chip, no error toast), so the handler never throws.
+host.onResolve(async (request) => {
+  const identifier = parseCommandArgs(request?.args);
+  const slug = settings.slug;
+  if (!identifier || !isValidSlug(slug)) return null;
+  try {
+    const result = await host.request({ method: "GET", path: workItemByIdentifierPath(slug, identifier) });
+    if (result.status !== 200) return null;
+    const row = resolveWorkItem(JSON.parse(result.body));
+    if (!row) return null;
+    return buildAttachItem({ slug, identifier: row.identifier, title: row.title });
+  } catch {
+    return null;
+  }
+});

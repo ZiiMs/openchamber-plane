@@ -62,6 +62,12 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "NO_SESSION", // clean link-without-session error
     "No open session", // human wording of that error
   ]) if (!src.includes(needle)) fail(`panel/main.js missing attach wiring: ${needle}`); else ok(`attach wiring present: ${needle}`);
+  for (const needle of [
+    "onResolve", // slash command answers instead of stubbing null
+    "args", // resolve reads the command args for the work item identifier
+    "plane.workspace-slug", // remembered workspace slug via host.storage cache
+    "plane.default-project", // remembered default project via host.storage cache
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing command wiring: ${needle}`); else ok(`command wiring present: ${needle}`);
 }
 
 // --- Ticket #5: pure browse-logic seam (no network) ---
@@ -132,5 +138,50 @@ else {
   eq(attach.badgeForOpenCount(true, 0), null, "badge clears when nothing open");
   eq(attach.badgeForOpenCount(true, 3), 3, "badge shows open count");
   eq(attach.badgeForOpenCount(true, 5000), 999, "badge clamps to 999");
+}
+// --- Ticket #7: pure resolve-logic seam (no network, no SDK) ---
+// Expected values come from the ticket + #3 spike notes (v2 direct GET
+// …/work-items/{identifier}/, unknown identifiers resolve to null), not
+// from the code.
+const resolveLogic = await import("./resolve-logic.mjs").catch(() => null);
+if (!resolveLogic) fail("plane/resolve-logic.mjs missing");
+else {
+  const eq = (actual, expected, label) => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    else ok(label);
+  };
+  eq(resolveLogic.parseCommandArgs("PROJ-142"), "PROJ-142", "command arg takes the identifier");
+  eq(resolveLogic.parseCommandArgs("  PROJ-142  "), "PROJ-142", "command arg trims whitespace");
+  eq(resolveLogic.parseCommandArgs("PROJ-142 extra words"), "PROJ-142", "command arg reads the first token");
+  eq(resolveLogic.parseCommandArgs("proj-7"), "proj-7", "command arg keeps the typed case");
+  for (const bad of ["", "   ", "just words", "PROJ-", "142", "PROJ 142", "attach PROJ-142"]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects ${JSON.stringify(bad)}`);
+  for (const bad of [undefined, null, 123, {}, []]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects non-string ${JSON.stringify(bad)}`);
+  eq(resolveLogic.resolveWorkItem({ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "In Progress", group: "started" } }),
+    { id: "u", identifier: "PROJ-142", title: "Fix login", state: "In Progress" }, "resolve unwraps a bare work item");
+  eq(resolveLogic.resolveWorkItem({ data: [{ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "Todo", group: "unstarted" } }] })?.identifier,
+    "PROJ-142", "resolve unwraps a {data:[…]} envelope");
+  eq(resolveLogic.resolveWorkItem({ data: { id: "u", name: "Fix login", identifier: "PROJ-142" } })?.identifier,
+    "PROJ-142", "resolve unwraps a {data:{…}} envelope");
+  for (const bad of [null, undefined, "nope", 42, [], { data: [] }, {}, { name: "no ids" }]) eq(resolveLogic.resolveWorkItem(bad), null, `resolve rejects ${JSON.stringify(bad)}`);
+}
+// --- Ticket #7: pure mapping-logic seam (no SDK) ---
+// Read-through per the ticket: settings win, host.storage fills blanks.
+const mapping = await import("./mapping-logic.mjs").catch(() => null);
+if (!mapping) fail("plane/mapping-logic.mjs missing");
+else {
+  const eq = (actual, expected, label) => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    else ok(label);
+  };
+  eq(mapping.MAPPING_STORAGE_KEYS, { slug: "plane.workspace-slug", defaultProject: "plane.default-project" }, "mapping storage keys");
+  eq(mapping.mergeMapping({ slug: "acme", defaultProject: "web" }, { slug: "old", defaultProject: "old" }),
+    { slug: "acme", defaultProject: "web" }, "settings win over stored values");
+  eq(mapping.mergeMapping({ slug: "", defaultProject: "" }, { slug: "acme", defaultProject: "web" }),
+    { slug: "acme", defaultProject: "web" }, "stored values fill blank settings");
+  eq(mapping.mergeMapping({ slug: "acme", defaultProject: "" }, { slug: "old", defaultProject: "web" }),
+    { slug: "acme", defaultProject: "web" }, "merge works per field");
+  eq(mapping.mergeMapping({ slug: "  acme  ", defaultProject: "" }, {}),
+    { slug: "acme", defaultProject: "" }, "merge trims and tolerates missing stored mapping");
+  eq(mapping.mergeMapping(), { slug: "", defaultProject: "" }, "merge tolerates missing inputs");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");
