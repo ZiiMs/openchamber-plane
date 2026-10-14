@@ -486,26 +486,30 @@ const paint = async () => {
       searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
     },
   }));
-  mounted.push(mountSelect(projectBox, {
+  const projectSelect = mountSelect(projectBox, {
     label: "Project",
     value: filters.projectId,
     options: projects.map((p) => ({ id: p.id, label: p.name })),
     onChange: (id) => {
       filters.projectId = id;
       filters.stateId = "";
+      // The kit paints its trigger from props, so the chosen value goes back in.
+      projectSelect.update({ value: id });
       void (async () => {
         await refreshStates(gen, slug, id);
         if (gen !== generation) return;
         void reload(gen, slug, false);
       })();
     },
-  }));
+  });
+  mounted.push(projectSelect);
   stateSelect = mountSelect(stateBox, {
     label: "State",
-    value: filters.stateId || null,
+    value: filters.stateId,
     options: stateOptions(),
     onChange: (id) => {
       filters.stateId = id;
+      stateSelect?.update({ value: id });
       void reload(gen, slug, false);
     },
   });
@@ -577,7 +581,7 @@ async function refreshStates(gen: number, slug: string, projectId: string) {
   }
   if (gen !== generation) return;
   if (filters.stateId && !states.some((s) => s.id === filters.stateId)) filters.stateId = "";
-  stateSelect?.update({ options: stateOptions(), value: filters.stateId || null });
+  stateSelect?.update({ options: stateOptions(), value: filters.stateId });
 }
 
 const currentQuery = (nextPage: Page) => {
