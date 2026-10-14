@@ -16,6 +16,10 @@ _Avoid_: Workspace id, workspace name
 The human-readable work-item key, project prefix plus sequence number.
 _Avoid_: UUID, id
 
+**State**:
+The named workflow position a work item sits in, defined per project, e.g. "In Progress".
+_Avoid_: Status, state name, state group
+
 **State group**:
-The workflow bucket a work item sits in, stable across projects.
+The fixed workflow bucket a state belongs to, stable across projects.
 _Avoid_: State name, status
