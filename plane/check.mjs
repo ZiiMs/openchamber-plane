@@ -44,6 +44,11 @@ if (c.page !== true) fail('contributes.page must be true (full-screen page reuse
 
 const html = new URL("./panel/index.html", dir);
 if (!existsSync(html)) fail("panel/index.html missing"); else ok("panel/index.html exists");
+// A package .svg panel.icon becomes an authenticated asset URL; a missing file
+// would silently fall back to the generic app icon on the rail and integration card.
+const icon = c.panel?.icon;
+if (typeof icon === "string" && icon.toLowerCase().endsWith(".svg") && !existsSync(new URL(`./${icon}`, dir)))
+  fail(`panel.icon svg missing: ${icon}`); else ok(`panel.icon resolves: ${icon}`);
 const js = new URL("./panel/main.js", dir);
 if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
   const src = readFileSync(js, "utf8");
