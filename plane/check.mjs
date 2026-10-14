@@ -19,6 +19,9 @@ if (!parsed.ok) fail(`SDK parseManifestJson rejected manifest: ${parsed.code} ${
 else ok("SDK parseManifestJson accepts manifest");
 const oc = pkg.openchamber;
 if (oc?.apiVersion !== 1) fail("openchamber.apiVersion must be 1"); else ok("apiVersion is 1");
+// The package .svg panel.icon needs a host that parses it; older hosts must
+// meet the compatibility gate instead of rejecting the whole manifest.
+if (oc?.engines?.openchamber !== ">=1.24.0") fail("openchamber.engines.openchamber must be >=1.24.0"); else ok("engines.openchamber is >=1.24.0");
 const c = oc?.contributes ?? {};
 for (const [path, label] of [
   [c.panel?.entry, "panel.entry"],
