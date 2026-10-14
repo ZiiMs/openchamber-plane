@@ -483,6 +483,7 @@ let openPopoverId: string | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
+let collapsedSections = new Set<string>();
 let openCount = 0;
 let serverTotal: number | null = null;
 let discoveredSlugs: string[] = [];
@@ -796,13 +797,25 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     results.push(mountList(listBox, listProps(rows)));
   } else {
     for (const section of sections) {
-      const heading = document.createElement("div");
+      const collapsed = collapsedSections.has(section.state);
+      const heading = document.createElement("button");
+      heading.type = "button";
       heading.className = "plane-section";
-      heading.style.cssText = "margin:10px 0 4px;font-size:0.75rem;color:var(--oc-muted);";
-      heading.textContent = sectionLabel(section);
+      heading.style.cssText = "display:block;width:100%;text-align:left;margin:10px 0 4px;padding:0;border:0;background:none;font-size:0.75rem;color:var(--oc-muted);cursor:pointer;";
+      heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      heading.dataset.state = section.state;
+      heading.textContent = `${collapsed ? "▸" : "▾"} ${sectionLabel(section)}`;
+      heading.addEventListener("click", () => {
+        if (collapsedSections.has(section.state)) collapsedSections.delete(section.state);
+        else collapsedSections.add(section.state);
+        renderResults(gen, "", false);
+        // The toggle re-render replaces the focused button; refocus its
+        // replacement so keyboard collapsing/expanding is uninterrupted.
+        listBox?.querySelector<HTMLElement>(`button.plane-section[data-state="${CSS.escape(section.state)}"]`)?.focus();
+      });
       listBox.append(heading);
       results.push({ dispose: () => heading.remove() });
-      results.push(mountList(listBox, listProps(section.rows)));
+      if (!collapsed) results.push(mountList(listBox, listProps(section.rows)));
     }
   }
   if (page !== null) {

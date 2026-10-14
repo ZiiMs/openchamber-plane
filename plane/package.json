@@ -4,6 +4,7 @@
   "private": true,
   "openchamber": {
     "apiVersion": 1,
+    "engines": { "openchamber": ">=1.24.0" },
     "contributes": {
       "panel": { "id": "plane", "name": "Plane", "icon": "plane.svg", "entry": "panel/index.html" },
       "page": true,
