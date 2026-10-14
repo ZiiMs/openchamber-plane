@@ -166,6 +166,28 @@ walks this list once:
 - [ ] Selecting one state in the State control shows a flat list with no
       headers.
 
+## Work item detail modal (issue #12)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the detail fetch's
+expand set, date and priority shaping, relation names, the display shape with
+missing fields hidden, and the interim description flattening. A human with a
+Plane Cloud tenant walks this list once:
+
+- [ ] Clicking a row selects it and opens the modal; the row behind it stays
+      highlighted.
+- [ ] The modal shows title, identifier, the state pill, priority, assignees,
+      start and target dates, created and updated dates, project, and labels —
+      missing fields are absent, never "undefined".
+- [ ] Esc, a press on the backdrop, and Close all dismiss it; focus returns to
+      the list.
+- [ ] The footer carries Open in Plane, Attach chip, Start session, and Link to
+      open session; the panel's own footer action bar is gone.
+- [ ] On the rail the modal uses the panel width; on the full page it centres
+      at a readable width.
+- [ ] A work item archived after the list loaded shows "Could not load this
+      work item" with Open in Plane still offered.
+- [ ] Load more and Retry still work from the panel footer.
+
 ## Known needs-tenant risks (from issue #3, extended on issue #5)
 
 - Canonical web base for browse URLs is assumed

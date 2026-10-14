@@ -77,6 +77,11 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "No open session", // human wording of that error
   ]) if (!src.includes(needle)) fail(`panel/main.js missing attach wiring: ${needle}`); else ok(`attach wiring present: ${needle}`);
   for (const needle of [
+    "aria-modal", // the detail modal is a dialog (issue #12)
+    "Could not load this work item", // the archived/failed notice
+    "Loading work item", // the modal's loading label
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing detail wiring: ${needle}`); else ok(`detail wiring present: ${needle}`);
+  for (const needle of [
     "onResolve", // slash command answers instead of stubbing null
     "args", // resolve reads the command args for the work item identifier
     "plane.workspace-slug", // remembered workspace slug via host.storage cache
@@ -240,5 +245,30 @@ else {
   eq(mapping.mergeMapping({ slug: "  acme  ", defaultProject: "" }, {}),
     { slug: "acme", defaultProject: "" }, "merge trims and tolerates missing stored mapping");
   eq(mapping.mergeMapping(), { slug: "", defaultProject: "" }, "merge tolerates missing inputs");
+}
+// --- Issue #12: pure detail-logic seam (no network, no SDK) ---
+// Expected values come from the issue and the Plane v2 by-identifier response
+// shape, not from the code.
+const detail = await import("./detail-logic.mjs").catch(() => null);
+if (!detail) fail("plane/detail-logic.mjs missing");
+else {
+  eq(detail.detailQuery().expand, "state,assignees,labels", "the detail fetch expands state, assignees, labels");
+  eq(detail.dateOnly("2026-01-14T09:22:41.478363Z"), "2026-01-14", "an ISO timestamp keeps its date");
+  eq(detail.dateOnly("2026-01-12"), "2026-01-12", "a plain date passes through");
+  for (const bad of [null, undefined, 42, "yesterday", ""]) eq(detail.dateOnly(bad), null, `dateOnly rejects ${JSON.stringify(bad)}`);
+  eq(detail.priorityLabel("high"), "High", "a priority is titled");
+  eq(detail.priorityLabel("none"), null, "the unset priority hides");
+  eq(detail.priorityLabel("bogus"), null, "an unknown priority hides");
+  eq(detail.relationNames([{ display_name: "Ada" }, { name: "api" }, {}, null]).join(","), "Ada,api", "relation names read users and labels");
+  eq(detail.relationNames("nope"), [], "a non-array relation is empty");
+  const shaped = detail.shapeWorkItemDetail({ data: [{ identifier: "PROJ-142", name: "Fix login", priority: "high", state: { name: "In Progress", group: "started" }, assignees: [{ display_name: "Ada" }], labels: [{ name: "api" }], start_date: "2026-01-12", target_date: null, created_at: "2026-01-14T09:22:41Z", updated_at: "2026-01-15T10:00:00Z", project_id: "p1", description_html: "<p>Loop</p>" }] });
+  eq([shaped.identifier, shaped.title, shaped.state, shaped.stateGroup, shaped.priority], ["PROJ-142", "Fix login", "In Progress", "started", "High"], "the detail carries the core fields");
+  eq([shaped.assignees.join(","), shaped.labels.join(","), shaped.projectId], ["Ada", "api", "p1"], "the detail carries relations and the project");
+  eq([shaped.startDate, shaped.targetDate, shaped.createdAt], ["2026-01-12", null, "2026-01-14"], "the detail carries dates, missing ones null");
+  eq(detail.shapeWorkItemDetail({ identifier: "PROJ-1", name: "Sparse" }).priority, null, "a sparse payload hides what it lacks");
+  for (const bad of [null, undefined, "nope", 42, {}, { data: [] }, { name: "no id" }]) eq(detail.shapeWorkItemDetail(bad), null, `the detail rejects ${JSON.stringify(bad)}`);
+  eq(detail.plainTextFromHtml("<p>Sign in</p><ul><li>loop</li></ul><script>alert(1)</script>"), "Sign in\n• loop\nalert(1)", "the description flattens to text");
+  eq(detail.plainTextFromHtml("<p>&lt;b&gt; &amp; more</p>"), "<b> & more", "entities decode after tags are dropped");
+  eq(detail.plainTextFromHtml(undefined), "", "a missing description is empty");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");

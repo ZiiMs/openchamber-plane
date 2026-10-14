@@ -1,6 +1,7 @@
 import { connectHost, HostRequestError } from "@openchamber/sdk";
 import {
   applyHostReady,
+  mountBadge,
   mountBanner,
   mountButton,
   mountCheckbox,
@@ -39,9 +40,25 @@ import {
   workItemsQuery,
   WORKSPACES_DISCOVERY_PATH,
 } from "../browse-logic.mjs";
+import { detailQuery, plainTextFromHtml, shapeWorkItemDetail } from "../detail-logic.mjs";
 
 type Row = { id: string; identifier: string; title: string; state: string; stateGroup: string | null; url: string };
 type State = { id: string; name: string; group: string | null; sequence: number | null };
+type Detail = {
+  identifier: string;
+  title: string;
+  state: string;
+  stateGroup: string | null;
+  priority: string | null;
+  assignees: string[];
+  labels: string[];
+  startDate: string | null;
+  targetDate: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  projectId: string | null;
+  description: string;
+};
 type Page = { kind: "offset" | "cursor"; next: number | string } | null;
 
 const REQUEST_TIMEOUT_MS = 20000;
@@ -196,6 +213,127 @@ async function linkSelected(gen: number) {
   }
 }
 
+// Detail modal (issue #12). The kit has no modal primitive, so it is composed
+// from the host theme tokens; the row click that selects the row opens it.
+const closeDetail = () => {
+  if (!modal) return;
+  modal.dispose();
+  modal = null;
+  focusBeforeModal?.focus?.();
+  focusBeforeModal = null;
+};
+
+const detailRow = (label: string, value: string | null, pill?: { label: string; tone: string }) => {
+  if (!pill && !value) return null;
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;align-items:baseline;";
+  const key = document.createElement("span");
+  key.style.cssText = "flex:0 0 84px;font-size:0.75rem;color:var(--oc-muted);";
+  key.textContent = label;
+  row.append(key);
+  if (pill) {
+    const holder = document.createElement("span");
+    row.append(holder);
+    mountBadge(holder, pill);
+  } else {
+    const val = document.createElement("span");
+    val.textContent = value as string;
+    row.append(val);
+  }
+  return row;
+};
+
+async function openDetail(gen: number, row: Row) {
+  closeDetail();
+  focusBeforeModal = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
+  const card = document.createElement("div");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
+  card.tabIndex = -1;
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
+  overlay.append(card);
+  document.body.append(overlay);
+  modal = { dispose: () => overlay.remove() };
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeDetail();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetail();
+  });
+  card.focus();
+
+  const head = document.createElement("div");
+  head.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
+  const heading = document.createElement("div");
+  heading.style.cssText = "flex:1 1 auto;min-width:0;font-weight:600;";
+  heading.textContent = row.title;
+  head.append(heading);
+  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: () => closeDetail() });
+  card.append(head);
+  const key = document.createElement("div");
+  key.style.cssText = "font-family:var(--oc-mono,monospace);font-size:0.75rem;color:var(--oc-muted);";
+  key.textContent = row.identifier;
+  card.append(key);
+
+  const spinner = mountSpinner(card, { label: "Loading work item" });
+  let detail: Detail | null = null;
+  let failure: { tone: "warning" | "error"; body: string } | null = null;
+  try {
+    const result = await apiGet(gen, workItemByIdentifierPath(settings.slug, row.identifier), detailQuery());
+    if (result.status === 200) detail = shapeWorkItemDetail(JSON.parse(result.body)) as Detail | null;
+    else failure = { tone: "warning", body: `Plane answered ${result.status}. It may have been archived since the list loaded.` };
+  } catch (error) {
+    failure = { tone: "error", body: describeError(error) };
+  }
+  spinner.dispose();
+  if (gen !== generation) {
+    closeDetail();
+    return;
+  }
+  if (failure) {
+    mountBanner(card, {
+      tone: failure.tone,
+      title: "Could not load this work item",
+      body: failure.body,
+      action: { label: "Open in Plane", onClick: () => void host.openUrl(row.url) },
+    });
+  } else if (detail) {
+    const body = document.createElement("div");
+    body.style.cssText = "display:flex;flex-direction:column;gap:6px;";
+    for (const node of [
+      detailRow("State", null, { label: detail.state, tone: stateTone(detail.stateGroup) }),
+      detailRow("Priority", detail.priority),
+      detailRow("Assignees", detail.assignees.join(", ") || null),
+      detailRow("Start", detail.startDate),
+      detailRow("Target", detail.targetDate),
+      detailRow("Created", detail.createdAt),
+      detailRow("Updated", detail.updatedAt),
+      detailRow("Project", projects.find((p) => p.id === detail.projectId)?.name ?? null),
+      detailRow("Labels", detail.labels.join(", ") || null),
+    ]) {
+      if (node) body.append(node);
+    }
+    const description = plainTextFromHtml(detail.description);
+    if (description) {
+      const text = document.createElement("div");
+      text.style.cssText = "white-space:pre-wrap;margin-top:4px;";
+      text.textContent = description;
+      body.append(text);
+    }
+    card.append(body);
+  }
+  const footer = document.createElement("div");
+  footer.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+  card.append(footer);
+  mountButton(footer, { label: "Open in Plane", variant: "outline", size: "sm", onClick: () => void host.openUrl(row.url) });
+  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachSelected(gen) });
+  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFromSelected(gen) });
+  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkSelected(gen) });
+}
+
 let generation = 0;
 let settings = { slug: "", defaultProject: "" };
 let connected = false;
@@ -205,6 +343,8 @@ let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
 let states: State[] = [];
 let stateSelect: ReturnType<typeof mountSelect> | null = null;
+let modal: { dispose: () => void } | null = null;
+let focusBeforeModal: HTMLElement | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
@@ -223,6 +363,7 @@ const paint = async () => {
   listBox = null;
   footerBox = null;
   stateSelect = null;
+  closeDetail();
   if (!connected) {
     openCount = 0;
     serverTotal = null;
@@ -338,7 +479,7 @@ const paint = async () => {
       void reload(gen, slug, false);
     },
   }));
-  mounted.push(mountText(footerBox, { text: "Select a row, then open, attach, start a session, or link it." }));
+  mounted.push(mountText(footerBox, { text: "Select a row to open it." }));
   // Best effort: a states failure leaves the State control with "All" alone.
   await refreshStates(gen, slug, filters.projectId);
   await reload(gen, slug, false);
@@ -501,6 +642,8 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     selectedId = id;
     actionNote = "";
     renderResults(gen, "", false);
+    const picked = selectedRow();
+    if (picked) void openDetail(gen, picked);
   };
   const listProps = (items: Row[]) => ({
     ariaLabel: "Plane work items",
@@ -525,13 +668,6 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       results.push(mountList(listBox, listProps(section.rows)));
     }
   }
-  const picked = selectedRow();
-  results.push(footerButton("Open in Plane", () => {
-    if (picked) void host.openUrl(picked.url);
-  }, !picked));
-  results.push(footerButton("Attach chip", () => void attachSelected(gen), !picked));
-  results.push(footerButton("Start session", () => void startSessionFromSelected(gen), !picked));
-  results.push(footerButton("Link to open session", () => void linkSelected(gen), !picked));
   if (page !== null) {
     results.push(footerButton("Load more", () => void reload(gen, settings.slug, true)));
   }
