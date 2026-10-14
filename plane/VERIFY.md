@@ -60,8 +60,8 @@ A human with a Plane Cloud tenant walks this list once:
 - [ ] Work-item rows show work item identifier, title, and state.
 - [ ] Search by text narrows the list; search by identifier (e.g. PROJ-142)
       surfaces the exact work item even when `?search=` alone would miss it.
-- [ ] State-group control (backlog, unstarted, started, completed,
-      cancelled) and Assigned to me narrow the list correctly.
+- [ ] Assigned to me narrows the list correctly. (The workflow filter is the
+      State control now — see "State pill and State filter" below.)
 - [ ] Scrolling past 25 rows offers Load more and appends the next page.
 - [ ] Selecting a row highlights it and enables the row actions below;
       Open in Plane opens `{web-base}/{slug}/browse/{identifier}/` in
@@ -121,9 +121,87 @@ Cloud tenant walks this list once:
       list plus rows come from the new workspace) and `/plane <id>`
       resolves against the new workspace.
 - [ ] Full walk-through on a scratch workspace, in order: connect → browse
-      (search plus state-group filter surface the work item) →
+      (search plus the State filter surface the work item) →
       `/plane <id>` command-attach → chip on the chat box → session with
       the chip attached.
+
+## State pill and State filter (issue #10)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the states path and
+query (`order_by=sequence`), state normalization (envelope or bare array,
+sparse rows dropped), the work-item query's `state_id__in` and the absence of
+`state_group__in`, the pill's tone map per state group, and the panel bundle's
+state wiring. A human with a Plane Cloud tenant walks this list once:
+
+- [ ] Rows carry a pill with their state (e.g. "In Progress"), toned by the
+      state's group (started → info, completed → success, cancelled → error,
+      backlog/unstarted → neutral); the muted second line is gone.
+- [ ] The State control lists the project's states in the project's workflow
+      order with the group as a hint and "All" first; the state-group control
+      is gone.
+- [ ] Picking "In Progress" (or "In Review") narrows the list to that state —
+      a filter the v1 state-group control could not express.
+- [ ] Switching project re-loads the states and clears a state the new project
+      does not have.
+- [ ] With `GET …/states/` failing, the list still loads with "All" and no
+      state options.
+- [ ] The account line reads "Connected as <name>", or "Plane user" — never
+      "Connected as .".
+
+## Grouped list (issue #11)
+
+Pure seams without a tenant: `node plane/check.mjs` covers section bucketing,
+section order (the project's workflow order, unreadable states in one trailing
+section), row order inside a section, and the section label. A human with a
+Plane Cloud tenant walks this list once:
+
+- [ ] The list renders as sections, one per state, in the project's workflow
+      order, with anything whose state cannot be read sharing a final
+      "No state" section.
+- [ ] Each header reads "<state> · <count>", and the count matches the rows
+      shown under it.
+- [ ] Rows stay newest-first inside a section.
+- [ ] Load more appends rows into their own sections and the counts grow.
+- [ ] Arrow keys move within a section, Tab moves between sections, and the
+      selected row stays highlighted across sections.
+- [ ] Selecting one state in the State control shows a flat list with no
+      headers.
+
+## Work item detail modal (issue #12)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the detail fetch's
+expand set, date and priority shaping, relation names, and the display shape
+with missing fields hidden. A human with a Plane Cloud tenant walks this list
+once:
+
+- [ ] Clicking a row selects it and opens the modal; the row behind it stays
+      highlighted.
+- [ ] The modal shows title, identifier, the state pill, priority, assignees,
+      start and target dates, created and updated dates, project, and labels —
+      missing fields are absent, never "undefined".
+- [ ] Esc, a press on the backdrop, and Close all dismiss it; focus returns to
+      the list.
+- [ ] The footer carries Open in Plane, Attach chip, Start session, and Link to
+      open session; the panel's own footer action bar is gone.
+- [ ] On the rail the modal uses the panel width; on the full page it centres
+      at a readable width.
+- [ ] A work item archived after the list loaded shows "Could not load this
+      work item" with Open in Plane still offered.
+- [ ] Load more and Retry still work from the panel footer.
+
+## Formatted description (issue #13)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the allow-list tree
+— unknown tags dropped with their text kept, attributes dropped, http links
+kept and other schemes dropped, entities decoded, unclosed list items closed
+like a browser would. A human with a Plane Cloud tenant walks this list once:
+
+- [ ] A description with paragraphs, a list, code, and a link renders as
+      formatting, not as markup.
+- [ ] A link in the description opens in the browser and does not navigate the
+      panel away.
+- [ ] Markup the allow-list rejects (script, style, iframe, event-handler
+      attributes) shows as text, with nothing executed.
 
 ## Known needs-tenant risks (from issue #3, extended on issue #5)
 
@@ -133,8 +211,13 @@ Cloud tenant walks this list once:
 - `?fields=` names and the `assignee_id=<users/me id>` value are confirmed
   against a tenant. `state` in `fields` is rejected with 400 ("'state' is an
   expandable relation"), so the list asks for `state_id` and takes the state
-  name/group from `expand=state`. `search`, `state_group__in`, and `offset`
-  paging are confirmed too.
+  name/group from `expand=state`. `search` and `offset` paging are confirmed
+  too; `state_group__in` was, but the panel sends `state_id__in` now.
+- The per-project states path, its `order_by=sequence` order, the
+  `state_id__in` work-item filter, and the detail fetch's
+  `expand=state,assignees,labels` are documented for v2 and marked
+  `needs-tenant` in `plane/browse-logic.mjs` and `plane/detail-logic.mjs`;
+  the state and detail sections above are the walk that confirms them.
 - Cursor continuation (`paginate=cursor` + `cursor=`) is a guess; offset
   paging is the default path and is covered by the shape tests.
 - `Default project` matches by project id first, then name; confirm which

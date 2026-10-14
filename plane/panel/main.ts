@@ -1,6 +1,7 @@
 import { connectHost, HostRequestError } from "@openchamber/sdk";
 import {
   applyHostReady,
+  mountBadge,
   mountBanner,
   mountButton,
   mountCheckbox,
@@ -21,21 +22,45 @@ import { MAPPING_STORAGE_KEYS, mergeMapping } from "../mapping-logic.mjs";
 import { parseCommandArgs, resolveWorkItem } from "../resolve-logic.mjs";
 import {
   browseUrl,
+  groupRowsByState,
   isIdentifierQuery,
   isValidSlug,
+  normalizeStates,
   normalizeWorkItem,
   parseDiscoveredWorkspaces,
   parseWorkItemsEnvelope,
   projectsPath,
   rateLimitDelayMs,
-  STATE_GROUPS,
+  sectionLabel,
+  statesPath,
+  statesQuery,
+  stateTone,
+  unwrapSingle,
   workItemByIdentifierPath,
   workItemsPath,
   workItemsQuery,
   WORKSPACES_DISCOVERY_PATH,
 } from "../browse-logic.mjs";
+import { detailQuery, parseDescriptionHtml, shapeWorkItemDetail } from "../detail-logic.mjs";
 
-type Row = { id: string; identifier: string; title: string; state: string; url: string };
+type Row = { id: string; identifier: string; title: string; state: string; stateGroup: string | null; url: string };
+type State = { id: string; name: string; group: string | null; sequence: number | null };
+type RichNode = { tag?: string; text?: string; href?: string; children?: RichNode[] };
+type Detail = {
+  identifier: string;
+  title: string;
+  state: string;
+  stateGroup: string | null;
+  priority: string | null;
+  assignees: string[];
+  labels: string[];
+  startDate: string | null;
+  targetDate: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  projectId: string | null;
+  description: string;
+};
 type Page = { kind: "offset" | "cursor"; next: number | string } | null;
 
 const REQUEST_TIMEOUT_MS = 20000;
@@ -190,13 +215,178 @@ async function linkSelected(gen: number) {
   }
 }
 
+// Closing hands focus back to the selected row: the re-render that opened the
+// modal rebuilt it, so the live row is found in the list rather than remembered.
+const closeDetail = () => {
+  if (!modal) return;
+  modal.dispose();
+  modal = null;
+  listBox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
+};
+
+// Description rendering (issue #13): the tree from parseDescriptionHtml is
+// turned into elements here — never innerHTML — so nothing in a Plane
+// description can execute or carry an attribute the allow-list dropped.
+const RICH_CSS = ".plane-rich p{margin:0 0 8px}.plane-rich ul,.plane-rich ol{margin:0 0 8px;padding-left:20px}.plane-rich li{margin:2px 0}.plane-rich h1{font-size:1.05rem;margin:8px 0 4px}.plane-rich h2{font-size:0.95rem;margin:8px 0 4px}.plane-rich h3{font-size:0.9rem;margin:8px 0 4px}.plane-rich code{font-family:var(--oc-mono,monospace);font-size:0.8125rem;background:var(--oc-muted-surface,rgba(127,127,127,.15));padding:1px 4px;border-radius:4px}.plane-rich pre{white-space:pre-wrap;background:var(--oc-muted-surface,rgba(127,127,127,.15));padding:8px;border-radius:6px;overflow:auto}.plane-rich pre code{background:none;padding:0}";
+
+const ensureRichStyle = () => {
+  if (document.getElementById("plane-rich-style")) return;
+  const style = document.createElement("style");
+  style.id = "plane-rich-style";
+  style.textContent = RICH_CSS;
+  document.head.append(style);
+};
+
+const renderRich = (nodes: RichNode[]): DocumentFragment => {
+  const frag = document.createDocumentFragment();
+  for (const node of nodes) {
+    if (typeof node.text === "string") {
+      frag.append(document.createTextNode(node.text));
+      continue;
+    }
+    if (!node.tag) continue;
+    const el = document.createElement(node.tag);
+    if (node.tag === "a" && node.href) {
+      el.setAttribute("href", node.href);
+      el.style.cssText = "color:var(--oc-primary-text,var(--oc-primary));text-decoration:underline;cursor:pointer;";
+      el.addEventListener("click", (event) => {
+        event.preventDefault();
+        void host.openUrl(node.href as string);
+      });
+    }
+    el.append(renderRich(node.children ?? []));
+    frag.append(el);
+  }
+  return frag;
+};
+
+// Detail modal (issue #12). The kit has no modal primitive, so it is composed
+// from the host theme tokens; the row click that selects the row opens it.
+const statePill = (state: string, stateGroup: string | null) => ({ label: state, tone: stateTone(stateGroup) });
+
+const detailRow = (label: string, value: string | null, pill?: { label: string; tone: string }) => {
+  if (!pill && !value) return null;
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;align-items:baseline;";
+  const key = document.createElement("span");
+  key.style.cssText = "flex:0 0 84px;font-size:0.75rem;color:var(--oc-muted);";
+  key.textContent = label;
+  row.append(key);
+  if (pill) {
+    const holder = document.createElement("span");
+    row.append(holder);
+    mountBadge(holder, pill);
+  } else {
+    const val = document.createElement("span");
+    val.textContent = value as string;
+    row.append(val);
+  }
+  return row;
+};
+
+async function openDetail(gen: number, row: Row) {
+  closeDetail();
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
+  const card = document.createElement("div");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
+  card.tabIndex = -1;
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
+  overlay.append(card);
+  document.body.append(overlay);
+  modal = { dispose: () => overlay.remove() };
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeDetail();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetail();
+  });
+  card.focus();
+
+  const head = document.createElement("div");
+  head.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
+  const heading = document.createElement("div");
+  heading.style.cssText = "flex:1 1 auto;min-width:0;font-weight:600;";
+  heading.textContent = row.title;
+  head.append(heading);
+  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: () => closeDetail() });
+  card.append(head);
+  const key = document.createElement("div");
+  key.style.cssText = "font-family:var(--oc-mono,monospace);font-size:0.75rem;color:var(--oc-muted);";
+  key.textContent = row.identifier;
+  card.append(key);
+
+  const spinner = mountSpinner(card, { label: "Loading work item" });
+  let detail: Detail | null = null;
+  let failure: { tone: "warning" | "error"; body: string } | null = null;
+  try {
+    const result = await apiGet(gen, workItemByIdentifierPath(settings.slug, row.identifier), detailQuery());
+    if (result.status === 200) detail = shapeWorkItemDetail(JSON.parse(result.body)) as Detail | null;
+    else if (result.status === 404) failure = { tone: "warning", body: "Plane has no such work item — it may have been archived since the list loaded." };
+    else failure = { tone: "error", body: `Plane answered ${result.status} for this work item.` };
+  } catch (error) {
+    failure = { tone: "error", body: describeError(error) };
+  }
+  spinner.dispose();
+  if (gen !== generation) {
+    closeDetail();
+    return;
+  }
+  if (failure) {
+    mountBanner(card, {
+      tone: failure.tone,
+      title: "Could not load this work item",
+      body: failure.body,
+      action: { label: "Open in Plane", onClick: () => void host.openUrl(row.url) },
+    });
+  } else if (detail) {
+    const body = document.createElement("div");
+    body.style.cssText = "display:flex;flex-direction:column;gap:6px;";
+    for (const node of [
+      detailRow("State", null, statePill(detail.state, detail.stateGroup)),
+      detailRow("Priority", detail.priority),
+      detailRow("Assignees", detail.assignees.join(", ") || null),
+      detailRow("Start", detail.startDate),
+      detailRow("Target", detail.targetDate),
+      detailRow("Created", detail.createdAt),
+      detailRow("Updated", detail.updatedAt),
+      detailRow("Project", projects.find((p) => p.id === detail.projectId)?.name ?? null),
+      detailRow("Labels", detail.labels.join(", ") || null),
+    ]) {
+      if (node) body.append(node);
+    }
+    const nodes = parseDescriptionHtml(detail.description) as RichNode[];
+    if (nodes.length > 0) {
+      ensureRichStyle();
+      const rich = document.createElement("div");
+      rich.className = "plane-rich";
+      rich.style.cssText = "margin-top:4px;";
+      rich.append(renderRich(nodes));
+      body.append(rich);
+    }
+    card.append(body);
+  }
+  const footer = document.createElement("div");
+  footer.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+  card.append(footer);
+  mountButton(footer, { label: "Open in Plane", variant: "outline", size: "sm", onClick: () => void host.openUrl(row.url) });
+  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachSelected(gen) });
+  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFromSelected(gen) });
+  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkSelected(gen) });
+}
+
 let generation = 0;
 let settings = { slug: "", defaultProject: "" };
 let connected = false;
 let account: string | null = null;
 let meId: string | null = null;
-let filters = { search: "", stateGroup: "", mine: false, projectId: "" };
+let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
+let states: State[] = [];
+let stateSelect: ReturnType<typeof mountSelect> | null = null;
+let modal: { dispose: () => void } | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
@@ -214,6 +404,8 @@ const paint = async () => {
   clear(results);
   listBox = null;
   footerBox = null;
+  stateSelect = null;
+  closeDetail();
   if (!connected) {
     openCount = 0;
     serverTotal = null;
@@ -250,7 +442,10 @@ const paint = async () => {
     return;
   }
   const slug = settings.slug;
-  mounted.push(mountText(root, { text: `Connected as ${account ?? "Plane user"}.` }));
+  // The host sends an empty account string before the name is known; `??`
+  // alone would render "Connected as ." (issue #10).
+  const who = typeof account === "string" && account.trim() ? account.trim() : "Plane user";
+  mounted.push(mountText(root, { text: `Connected as ${who}.` }));
   const spinner = mountSpinner(root, { label: "Loading Plane projects" });
   mounted.push(spinner);
   try {
@@ -294,24 +489,34 @@ const paint = async () => {
       searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
     },
   }));
-  mounted.push(mountSelect(projectBox, {
+  const projectSelect = mountSelect(projectBox, {
     label: "Project",
     value: filters.projectId,
     options: projects.map((p) => ({ id: p.id, label: p.name })),
     onChange: (id) => {
       filters.projectId = id;
-      void reload(gen, slug, false);
+      filters.stateId = "";
+      // The kit paints its trigger from props, so the chosen value goes back in.
+      projectSelect.update({ value: id });
+      void (async () => {
+        await refreshStates(gen, slug, id);
+        if (gen !== generation) return;
+        void reload(gen, slug, false);
+      })();
     },
-  }));
-  mounted.push(mountSelect(stateBox, {
-    label: "State group",
-    value: filters.stateGroup || null,
-    options: [{ id: "", label: "All" }, ...STATE_GROUPS.map((g) => ({ id: g, label: g }))],
+  });
+  mounted.push(projectSelect);
+  stateSelect = mountSelect(stateBox, {
+    label: "State",
+    value: filters.stateId,
+    options: stateOptions(),
     onChange: (id) => {
-      filters.stateGroup = id;
+      filters.stateId = id;
+      stateSelect?.update({ value: id });
       void reload(gen, slug, false);
     },
-  }));
+  });
+  mounted.push(stateSelect);
   mounted.push(mountCheckbox(mineBox, {
     label: "Assigned to me",
     checked: filters.mine,
@@ -320,7 +525,9 @@ const paint = async () => {
       void reload(gen, slug, false);
     },
   }));
-  mounted.push(mountText(footerBox, { text: "Select a row, then open, attach, start a session, or link it." }));
+  mounted.push(mountText(footerBox, { text: "Select a row to open it." }));
+  // Best effort: a states failure leaves the State control with "All" alone.
+  await refreshStates(gen, slug, filters.projectId);
   await reload(gen, slug, false);
 };
 
@@ -360,10 +567,30 @@ async function loadProjects(gen: number, slug: string) {
     .map((p) => ({ id: p.id as string, name: typeof p.name === "string" && p.name ? p.name : (p.id as string) }));
 }
 
+const stateOptions = () => [
+  { id: "", label: "All" },
+  ...states.map((s) => ({ id: s.id, label: s.name, hint: s.group ?? undefined })),
+];
+
+// Best-effort states for the State control (issue #10): any failure leaves the
+// filter at "All" and the list usable.
+async function refreshStates(gen: number, slug: string, projectId: string) {
+  states = [];
+  try {
+    const result = await apiGetWithBackoff(gen, statesPath(slug, projectId), statesQuery());
+    if (result.status === 200) states = normalizeStates(JSON.parse(result.body));
+  } catch {
+    states = [];
+  }
+  if (gen !== generation) return;
+  if (filters.stateId && !states.some((s) => s.id === filters.stateId)) filters.stateId = "";
+  stateSelect?.update({ options: stateOptions(), value: filters.stateId });
+}
+
 const currentQuery = (nextPage: Page) => {
   const query = workItemsQuery({
     search: filters.search || undefined,
-    stateGroup: filters.stateGroup || undefined,
+    stateId: filters.stateId || undefined,
     // needs-tenant: confirm assignee_id accepts the users/me id for "my" work.
     assigneeId: filters.mine ? meId ?? undefined : undefined,
     offset: nextPage?.kind === "offset" ? String(nextPage.next) : undefined,
@@ -424,10 +651,7 @@ async function reload(gen: number, slug: string, append: boolean) {
     if (!append && isIdentifierQuery(filters.search)) {
       const direct = await apiGet(gen, workItemByIdentifierPath(slug, filters.search.trim()));
       if (direct.status === 200) {
-        const body = JSON.parse(direct.body) as unknown;
-        const single = Array.isArray((body as { data?: unknown })?.data)
-          ? (body as { data: unknown[] }).data[0]
-          : body;
+        const single = unwrapSingle(JSON.parse(direct.body));
         const row = normalizeWorkItem(single);
         if (row && !seen.has(row.id)) {
           seen.add(row.id);
@@ -457,24 +681,36 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     }
     return;
   }
-  results.push(mountList(listBox, {
+  const onSelect = (id: string) => {
+    selectedId = id;
+    actionNote = "";
+    renderResults(gen, "", false);
+    const picked = selectedRow();
+    if (picked) void openDetail(gen, picked);
+  };
+  const listProps = (items: Row[]) => ({
     ariaLabel: "Plane work items",
     emptyText: "No work items match.",
     selectedId,
-    items: rows.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, subtitle: r.state })),
-    onSelect: (id) => {
-      selectedId = id;
-      actionNote = "";
-      renderResults(gen, "", false);
-    },
-  }));
-  const picked = selectedRow();
-  results.push(footerButton("Open in Plane", () => {
-    if (picked) void host.openUrl(picked.url);
-  }, !picked));
-  results.push(footerButton("Attach chip", () => void attachSelected(gen), !picked));
-  results.push(footerButton("Start session", () => void startSessionFromSelected(gen), !picked));
-  results.push(footerButton("Link to open session", () => void linkSelected(gen), !picked));
+    // The state is a pill now, not a second line (issue #10).
+    items: items.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: statePill(r.state, r.stateGroup) })),
+    onSelect,
+  });
+  // Sections by state (issue #11); a flat list while a state is filtered.
+  const sections = filters.stateId || rows.length === 0 ? [] : groupRowsByState(rows, states);
+  if (sections.length === 0) {
+    results.push(mountList(listBox, listProps(rows)));
+  } else {
+    for (const section of sections) {
+      const heading = document.createElement("div");
+      heading.className = "plane-section";
+      heading.style.cssText = "margin:10px 0 4px;font-size:0.75rem;color:var(--oc-muted);";
+      heading.textContent = sectionLabel(section);
+      listBox.append(heading);
+      results.push({ dispose: () => heading.remove() });
+      results.push(mountList(listBox, listProps(section.rows)));
+    }
+  }
   if (page !== null) {
     results.push(footerButton("Load more", () => void reload(gen, settings.slug, true)));
   }

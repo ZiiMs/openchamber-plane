@@ -51,7 +51,11 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
   else ok("panel/main.js is a classic script");
   if (!src.includes("Not connected")) fail("panel/main.js missing not-connected empty state"); else ok("not-connected empty state present");
   for (const needle of [
-    "state_group__in", // work-item list carries the state-group filter
+    "state_id__in", // work-item list carries the state filter (issue #10)
+    "/states/", // states come from the project's own workflow (issue #10)
+    "order_by", // states are asked for in workflow order
+    "Plane user", // an empty account name falls back instead of "Connected as ."
+    "plane-section", // the grouped list renders per-state section headings
     "assignee_id", // work-item list carries the assigned-to-me filter
     "/work-items/", // work-item list / by-identifier paths
     "users/me/workspaces", // opportunistic workspace auto-discovery path
@@ -72,6 +76,12 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "NO_SESSION", // clean link-without-session error
     "No open session", // human wording of that error
   ]) if (!src.includes(needle)) fail(`panel/main.js missing attach wiring: ${needle}`); else ok(`attach wiring present: ${needle}`);
+  for (const needle of [
+    "aria-modal", // the detail modal is a dialog (issue #12)
+    "Could not load this work item", // the archived/failed notice
+    "Loading work item", // the modal's loading label
+    "plane-rich", // the description renders through the allow-list (issue #13)
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing detail wiring: ${needle}`); else ok(`detail wiring present: ${needle}`);
   for (const needle of [
     "onResolve", // slash command answers instead of stubbing null
     "args", // resolve reads the command args for the work item identifier
@@ -97,9 +107,10 @@ else {
   eq(base.expand, "state,assignees", "query expands state+assignees");
   eq(typeof base.fields === "string" && base.fields.split(",").includes("state_id"), true, "query trims fields incl. state_id");
   eq(base.per_page, "25", "query pages at 25");
-  eq("search" in base || "state_group__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
-  const full = browse.workItemsQuery({ search: "api crash", stateGroup: "started", assigneeId: "u1", offset: "25" });
-  eq([full.search, full.state_group__in, full.assignee_id, full.offset], ["api crash", "started", "u1", "25"], "query carries search/filter/offset");
+  eq("search" in base || "state_id__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
+  const full = browse.workItemsQuery({ search: "api crash", stateId: "s1", assigneeId: "u1", offset: "25" });
+  eq([full.search, full.state_id__in, full.assignee_id, full.offset], ["api crash", "s1", "u1", "25"], "query carries search/filter/offset");
+  eq("state_group__in" in full, false, "the state-group filter is gone (issue #10)");
   const off = browse.parseWorkItemsEnvelope({ data: [{ id: "a" }], next: 25, total_count: 60, pagination: { style: "offset" } });
   eq([off.items.length, off.page], [1, { kind: "offset", next: 25 }], "offset envelope page");
   eq(off.totalCount, 60, "offset envelope carries total_count for the badge");
@@ -110,8 +121,54 @@ else {
   eq([cur.items.length, cur.page], [1, { kind: "cursor", next: "abc" }], "cursor envelope page");
   eq(browse.parseWorkItemsEnvelope({ data: [], next_cursor: null, has_more: false, pagination: { style: "cursor" } }).page, null, "cursor envelope end");
   eq(browse.normalizeWorkItem({ id: "u", name: "Fix login", identifier: "ACME-7", state: { name: "In Progress", group: "started" } }),
-    { id: "u", identifier: "ACME-7", title: "Fix login", state: "In Progress" }, "row shows identifier, title, state");
+    { id: "u", identifier: "ACME-7", title: "Fix login", state: "In Progress", stateGroup: "started" }, "row shows identifier, title, state, state group");
   eq(browse.normalizeWorkItem({ id: "u", name: "Sparse", state_id: "s1" }).state, "s1", "sparse state falls back to state_id");
+  eq(browse.normalizeWorkItem({ id: "u", name: "Sparse", state_id: "s1" }).stateGroup, null, "a sparse state has no group");
+  // --- Issue #10: the project's states and the pill's tone ---
+  // Expected values come from the Plane v2 states endpoint and the issue, not
+  // from the code: `order_by=sequence` is the project's workflow order.
+  eq(browse.statesPath("acme", "p1"), "/api/v2/workspaces/acme/projects/p1/states/", "states path");
+  eq(browse.statesQuery().order_by, "sequence", "states are asked for in workflow order");
+  eq(browse.normalizeState({ id: "s1", name: "In Progress", group: "started", sequence: 25000 }),
+    { id: "s1", name: "In Progress", group: "started" }, "state normalises to id, name and group");
+  eq(browse.normalizeState({ id: "s2" }), { id: "s2", name: "s2", group: null }, "a sparse state keeps its id as the name");
+  for (const bad of [null, undefined, "nope", 42, {}, { name: "no id" }, { id: "" }]) eq(browse.normalizeState(bad), null, `state rejects ${JSON.stringify(bad)}`);
+  eq(browse.normalizeStates({ data: [{ id: "a", name: "Todo", group: "unstarted" }, { name: "no id" }], next: null }).map((s) => s.name), ["Todo"], "states unwrap the envelope and drop sparse rows");
+  eq(browse.normalizeStates([{ id: "a", name: "A" }, { id: "b", name: "B" }]).length, 2, "states accept a bare array");
+  for (const bad of [null, undefined, "nope", 42, {}]) eq(browse.normalizeStates(bad), [], `states reject ${JSON.stringify(bad)}`);
+  eq(browse.unwrapSingle({ data: [{ id: "a" }] }), { id: "a" }, "unwrap takes the first of a data array");
+  eq(browse.unwrapSingle({ data: { id: "a" } }), { id: "a" }, "unwrap takes a data object");
+  eq(browse.unwrapSingle({ id: "a" }), { id: "a" }, "unwrap passes a bare item");
+  eq(browse.unwrapSingle({ data: [] }), null, "unwrap gives null for an empty array");
+  eq(browse.stateTone("started"), "info", "started is info");
+  eq(browse.stateTone("completed"), "success", "completed is success");
+  eq(browse.stateTone("cancelled"), "error", "cancelled is error");
+  eq(browse.stateTone("backlog"), "neutral", "backlog is neutral");
+  eq(browse.stateTone("unstarted"), "neutral", "unstarted is neutral");
+  eq(browse.stateTone(undefined), "neutral", "an unknown state group is neutral");
+  eq("STATE_GROUPS" in browse, false, "the state-group constant is gone (issue #10)");
+  // --- Issue #11: sections by state ---
+  // Expected values come from the issue: the project's workflow order, rows
+  // in the order the list loaded them, unreadable states last.
+  const stateList = [
+    { id: "s1", name: "Todo", group: "unstarted", sequence: 15000 },
+    { id: "s2", name: "In Progress", group: "started", sequence: 25000 },
+    { id: "s3", name: "Done", group: "completed", sequence: 35000 },
+  ];
+  const groupedRows = [
+    { id: "a", state: "Done" },
+    { id: "b", state: "In Progress" },
+    { id: "c", state: "Done" },
+    { id: "d", state: "Mystery" },
+    { id: "e", state: "Todo" },
+  ];
+  const sections = browse.groupRowsByState(groupedRows, stateList);
+  eq(sections.map((s) => s.state), ["Todo", "In Progress", "Done", "No state"], "sections follow the workflow order, unreadable states last");
+  eq(sections[2].rows.map((r) => r.id), ["a", "c"], "rows keep their order inside a section");
+  eq(browse.groupRowsByState([{ id: "x" }, { id: "y", state: "Mystery" }, { id: "z", state_id: "s9" }], stateList).map((s) => [s.state, s.rows.length]),
+    [["No state", 3]], "every unreadable state shares one trailing section");
+  eq(browse.groupRowsByState([], stateList), [], "no rows, no sections");
+  eq(browse.sectionLabel({ state: "In Progress", rows: [{}, {}] }), "In Progress · 2", "the section label names the state and the loaded rows");
   eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
   eq(browse.rateLimitDelayMs({ retryAfter: "2", attempt: 0 }), 2000, "Retry-After seconds honored");
   eq(browse.rateLimitDelayMs({ retryAfter: "garbage", attempt: 2 }), 4000, "bad Retry-After falls back to exponential");
@@ -172,7 +229,7 @@ else {
   for (const bad of ["", "   ", "just words", "PROJ-", "142", "PROJ 142", "attach PROJ-142"]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects ${JSON.stringify(bad)}`);
   for (const bad of [undefined, null, 123, {}, []]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects non-string ${JSON.stringify(bad)}`);
   eq(resolveLogic.resolveWorkItem({ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "In Progress", group: "started" } }),
-    { id: "u", identifier: "PROJ-142", title: "Fix login", state: "In Progress" }, "resolve unwraps a bare work item");
+    { id: "u", identifier: "PROJ-142", title: "Fix login", state: "In Progress", stateGroup: "started" }, "resolve unwraps a bare work item");
   eq(resolveLogic.resolveWorkItem({ data: [{ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "Todo", group: "unstarted" } }] })?.identifier,
     "PROJ-142", "resolve unwraps a {data:[…]} envelope");
   eq(resolveLogic.resolveWorkItem({ data: { id: "u", name: "Fix login", identifier: "PROJ-142" } })?.identifier,
@@ -194,5 +251,47 @@ else {
   eq(mapping.mergeMapping({ slug: "  acme  ", defaultProject: "" }, {}),
     { slug: "acme", defaultProject: "" }, "merge trims and tolerates missing stored mapping");
   eq(mapping.mergeMapping(), { slug: "", defaultProject: "" }, "merge tolerates missing inputs");
+}
+// --- Issue #12: pure detail-logic seam (no network, no SDK) ---
+// Expected values come from the issue and the Plane v2 by-identifier response
+// shape, not from the code.
+const detail = await import("./detail-logic.mjs").catch(() => null);
+if (!detail) fail("plane/detail-logic.mjs missing");
+else {
+  eq(detail.detailQuery().expand, "state,assignees,labels", "the detail fetch expands state, assignees, labels");
+  eq(detail.dateOnly("2026-01-14T09:22:41.478363Z"), "2026-01-14", "an ISO timestamp keeps its date");
+  eq(detail.dateOnly("2026-01-12"), "2026-01-12", "a plain date passes through");
+  for (const bad of [null, undefined, 42, "yesterday", ""]) eq(detail.dateOnly(bad), null, `dateOnly rejects ${JSON.stringify(bad)}`);
+  eq(detail.priorityLabel("high"), "High", "a priority is titled");
+  eq(detail.priorityLabel("none"), null, "the unset priority hides");
+  eq(detail.priorityLabel("bogus"), null, "an unknown priority hides");
+  eq(detail.relationNames([{ display_name: "Ada" }, { name: "api" }, {}, null]).join(","), "Ada,api", "relation names read users and labels");
+  eq(detail.relationNames("nope"), [], "a non-array relation is empty");
+  const shaped = detail.shapeWorkItemDetail({ data: [{ identifier: "PROJ-142", name: "Fix login", priority: "high", state: { name: "In Progress", group: "started" }, assignees: [{ display_name: "Ada" }], labels: [{ name: "api" }], start_date: "2026-01-12", target_date: null, created_at: "2026-01-14T09:22:41Z", updated_at: "2026-01-15T10:00:00Z", project_id: "p1", description_html: "<p>Loop</p>" }] });
+  eq([shaped.identifier, shaped.title, shaped.state, shaped.stateGroup, shaped.priority], ["PROJ-142", "Fix login", "In Progress", "started", "High"], "the detail carries the core fields");
+  eq([shaped.assignees.join(","), shaped.labels.join(","), shaped.projectId], ["Ada", "api", "p1"], "the detail carries relations and the project");
+  eq([shaped.startDate, shaped.targetDate, shaped.createdAt], ["2026-01-12", null, "2026-01-14"], "the detail carries dates, missing ones null");
+  eq(detail.shapeWorkItemDetail({ identifier: "PROJ-1", name: "Sparse" }).priority, null, "a sparse payload hides what it lacks");
+  for (const bad of [null, undefined, "nope", 42, {}, { data: [] }, { name: "no id" }]) eq(detail.shapeWorkItemDetail(bad), null, `the detail rejects ${JSON.stringify(bad)}`);
+  // --- Issue #13: the description allow-list ---
+  // Hostile input is the point: these assertions are the trust boundary.
+  eq(detail.parseDescriptionHtml("<p>Loop <b>now</b></p>"),
+    [{ tag: "p", children: [{ text: "Loop " }, { tag: "b", children: [{ text: "now" }] }] }], "allow-listed tags build a tree");
+  eq(detail.parseDescriptionHtml("<script>alert(1)</script>"), [{ text: "alert(1)" }], "a dropped tag keeps its text");
+  eq(detail.parseDescriptionHtml('<style>p{color:red}</style><iframe src="https://x"></iframe>ok'),
+    [{ text: "p{color:red}" }, { text: "ok" }], "style and frame tags drop, their text stays");
+  eq(detail.parseDescriptionHtml('<img src=x onerror="alert(1)"><p onclick="alert(1)">ok</p>'),
+    [{ tag: "p", children: [{ text: "ok" }] }], "attributes are dropped with their tags");
+  eq(detail.parseDescriptionHtml('<a href="https://app.plane.so/x" target="_blank">Plane</a>'),
+    [{ tag: "a", children: [{ text: "Plane" }], href: "https://app.plane.so/x" }], "an http link keeps its href and nothing else");
+  eq(detail.parseDescriptionHtml('<a href="javascript:alert(1)">x</a>'),
+    [{ tag: "a", children: [{ text: "x" }] }], "a non-http link renders as text");
+  eq(detail.parseDescriptionHtml("<p>&lt;b&gt; &amp; more</p>"), [{ tag: "p", children: [{ text: "<b> & more" }] }], "entities decode into text");
+  eq(detail.parseDescriptionHtml("<ul><li>a<li>b</ul>"),
+    [{ tag: "ul", children: [{ tag: "li", children: [{ text: "a" }] }, { tag: "li", children: [{ text: "b" }] }] }], "an unclosed list item closes like a browser would");
+  eq(detail.parseDescriptionHtml("<p>a</p></p>stray"), [{ tag: "p", children: [{ text: "a" }] }, { text: "stray" }], "a stray close is ignored");
+  eq(detail.parseDescriptionHtml(undefined), [], "a missing description is an empty tree");
+  eq(detail.isHttpUrl("https://x"), true, "http links pass");
+  eq(detail.isHttpUrl("javascript:x"), false, "javascript: does not");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");
