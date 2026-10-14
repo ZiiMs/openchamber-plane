@@ -12,6 +12,12 @@ import {
   mountText,
 } from "@openchamber/sdk/ui";
 import {
+  badgeForOpenCount,
+  buildAttachItem,
+  buildSessionText,
+  isOpenWorkItem,
+} from "../attach-logic.mjs";
+import {
   browseUrl,
   isIdentifierQuery,
   isValidSlug,
@@ -75,6 +81,75 @@ async function apiGetWithBackoff(gen: number, path: string, query?: Record<strin
   return result;
 }
 
+const refreshBadge = () => {
+  void host.setBadge(badgeForOpenCount(connected, openCount)).catch(() => {});
+};
+
+const selectedRow = () => rows.find((r) => r.id === selectedId) ?? null;
+
+const selectedChip = () => {
+  const row = selectedRow();
+  if (!row) return null;
+  return {
+    row,
+    chip: buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title }),
+  };
+};
+
+const say = (gen: number, tone: "info" | "success" | "error", note: string) => {
+  if (gen !== generation) return;
+  actionTone = tone;
+  actionNote = note;
+  renderResults(gen, "", false);
+};
+
+async function attachSelected(gen: number) {
+  const found = selectedChip();
+  if (!found) return;
+  try {
+    await host.attach(found.chip);
+    if (gen !== generation) return;
+    await host.close(); // dismisses the attach dialog; no-op on the rail
+    say(gen, "success", `Attached ${found.row.identifier} to the chat box.`);
+  } catch (error) {
+    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+  }
+}
+
+async function startSessionFromSelected(gen: number) {
+  const found = selectedChip();
+  if (!found) return;
+  const text = buildSessionText({
+    identifier: found.row.identifier,
+    title: found.row.title,
+    url: found.chip.url,
+    state: found.row.state,
+  });
+  try {
+    const result = await host.startSession({ ...found.chip, text });
+    if (gen !== generation) return;
+    if (result.sessionId) say(gen, "success", `Started a session for ${found.row.identifier}.`);
+    else say(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
+  } catch (error) {
+    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+  }
+}
+
+async function linkSelected(gen: number) {
+  const found = selectedChip();
+  if (!found) return;
+  try {
+    await host.sessionLink(found.chip);
+    say(gen, "success", `Linked ${found.row.identifier} to the open session.`);
+  } catch (error) {
+    if (error instanceof HostRequestError && error.code === "NO_SESSION") {
+      say(gen, "info", "No open session — open or start a session first, then link.");
+      return;
+    }
+    say(gen, "error", error instanceof HostRequestError ? `${error.code}: ${error.message}` : String(error));
+  }
+}
+
 let generation = 0;
 let settings = { slug: "", defaultProject: "" };
 let connected = false;
@@ -84,6 +159,10 @@ let filters = { search: "", stateGroup: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
 let rows: Row[] = [];
 let page: Page = null;
+let selectedId: string | null = null;
+let openCount = 0;
+let actionNote = "";
+let actionTone: "info" | "success" | "error" = "info";
 let statusNote = "";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -94,6 +173,8 @@ const paint = async () => {
   listBox = null;
   footerBox = null;
   if (!connected) {
+    openCount = 0;
+    refreshBadge();
     mounted.push(mountEmpty(root, {
       title: "Not connected",
       body: "Connect Plane in Settings → Integrations → Plane.",
@@ -101,6 +182,8 @@ const paint = async () => {
     return;
   }
   if (!settings.slug) {
+    openCount = 0;
+    refreshBadge();
     mounted.push(mountEmpty(root, {
       title: "No workspace slug",
       body: "Set Workspace slug in Settings → Integrations → Plane.",
@@ -108,6 +191,8 @@ const paint = async () => {
     return;
   }
   if (!isValidSlug(settings.slug)) {
+    openCount = 0;
+    refreshBadge();
     mounted.push(mountBanner(root, {
       tone: "error",
       title: "Invalid workspace slug",
@@ -133,6 +218,8 @@ const paint = async () => {
   spinner.dispose();
   mounted.splice(mounted.indexOf(spinner), 1);
   if (projects.length === 0) {
+    openCount = 0;
+    refreshBadge();
     mounted.push(mountEmpty(root, { title: "No projects", body: `Workspace “${slug}” has no projects.` }));
     return;
   }
@@ -183,7 +270,7 @@ const paint = async () => {
       void reload(gen, slug, false);
     },
   }));
-  mounted.push(mountText(footerBox, { text: "Select a row to open it in Plane." }));
+  mounted.push(mountText(footerBox, { text: "Select a row, then open, attach, start a session, or link it." }));
   await reload(gen, slug, false);
 };
 
@@ -229,6 +316,9 @@ async function reload(gen: number, slug: string, append: boolean) {
   if (!append) {
     rows = [];
     page = null;
+    selectedId = null;
+    openCount = 0;
+    actionNote = "";
   }
   if (filters.mine && !meId) {
     renderResults(gen, `Could not determine your account id, showing unfiltered.`, true);
@@ -259,6 +349,7 @@ async function reload(gen: number, slug: string, append: boolean) {
       if (row && !seen.has(row.id)) {
         seen.add(row.id);
         rows.push({ ...row, url: browseUrl(slug, row.identifier) });
+        if (isOpenWorkItem(item)) openCount += 1;
       }
     }
     // Identifier queries also fetch the exact work item directly: v2 ?search=
@@ -271,7 +362,11 @@ async function reload(gen: number, slug: string, append: boolean) {
           ? (body as { data: unknown[] }).data[0]
           : body;
         const row = normalizeWorkItem(single);
-        if (row && !seen.has(row.id)) rows.unshift({ ...row, url: browseUrl(slug, row.identifier) });
+        if (row && !seen.has(row.id)) {
+          seen.add(row.id);
+          rows.unshift({ ...row, url: browseUrl(slug, row.identifier) });
+          if (isOpenWorkItem(single)) openCount += 1;
+        }
       }
     }
     renderResults(gen, "", false);
@@ -285,7 +380,9 @@ async function reload(gen: number, slug: string, append: boolean) {
 function renderResults(gen: number, error: string, showRetry: boolean) {
   if (!listBox || !footerBox || gen !== generation) return;
   clear(results);
+  refreshBadge();
   if (statusNote) results.push(mountBanner(listBox, { tone: "warning", title: statusNote }));
+  if (actionNote) results.push(mountBanner(listBox, { tone: actionTone, title: actionNote }));
   if (error) {
     results.push(mountBanner(listBox, { tone: "error", title: "Could not load work items", body: error }));
     if (showRetry) {
@@ -301,11 +398,44 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
   results.push(mountList(listBox, {
     ariaLabel: "Plane work items",
     emptyText: "No work items match.",
+    selectedId,
     items: rows.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, subtitle: r.state })),
     onSelect: (id) => {
-      const row = rows.find((r) => r.id === id);
-      if (row) void host.openUrl(row.url);
+      selectedId = id;
+      actionNote = "";
+      renderResults(gen, "", false);
     },
+  }));
+  const picked = selectedRow();
+  results.push(mountButton(footerBox, {
+    label: "Open in Plane",
+    variant: "outline",
+    size: "sm",
+    disabled: !picked,
+    onClick: () => {
+      if (picked) void host.openUrl(picked.url);
+    },
+  }));
+  results.push(mountButton(footerBox, {
+    label: "Attach chip",
+    variant: "outline",
+    size: "sm",
+    disabled: !picked,
+    onClick: () => void attachSelected(gen),
+  }));
+  results.push(mountButton(footerBox, {
+    label: "Start session",
+    variant: "outline",
+    size: "sm",
+    disabled: !picked,
+    onClick: () => void startSessionFromSelected(gen),
+  }));
+  results.push(mountButton(footerBox, {
+    label: "Link to open session",
+    variant: "outline",
+    size: "sm",
+    disabled: !picked,
+    onClick: () => void linkSelected(gen),
   }));
   if (page !== null) {
     results.push(mountButton(footerBox, {

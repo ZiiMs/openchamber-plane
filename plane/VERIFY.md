@@ -43,11 +43,35 @@ A human with a Plane Cloud tenant walks this list once:
 - [ ] State-group control (backlog, unstarted, started, completed,
       cancelled) and Assigned to me narrow the list correctly.
 - [ ] Scrolling past 25 rows offers Load more and appends the next page.
-- [ ] Selecting a row opens `{web-base}/{slug}/browse/{identifier}/` in
+- [ ] Selecting a row highlights it and enables the row actions below;
+      Open in Plane opens `{web-base}/{slug}/browse/{identifier}/` in
       the host browser.
 - [ ] Blank slug shows the "No workspace slug" state; a bogus slug shows
       the "Unknown workspace slug" error — never a spinner hang.
 - [ ] Heavy paging degrades to a rate-limit notice plus Retry, then recovers.
+
+## Attach (ticket #6)
+
+Pure seams without a tenant: `node plane/check.mjs` covers chip shaping
+(`providerId` plane, id = work item identifier, title, canonical browse URL;
+clamped to host limits id<=128, title<=200, url<=2000), new-session text
+(identifier, title, link, state), open-work-item count (skips the
+completed/cancelled state groups), and badge values (null when disconnected
+or zero, clamped to 999). `onResolve` still returns null — slash-command
+identifier resolution is ticket #7. A human with a Plane Cloud tenant walks
+this list once:
+
+- [ ] Selecting a work-item row enables Attach chip, Start session,
+      Link to open session, and Open in Plane (disabled with no selection).
+- [ ] Attach chip puts a chip on the chat box that deep-links to the work
+      item's browse URL; from the attach dialog the dialog closes after.
+- [ ] Start session carries title, link, and state into the new session.
+- [ ] Link to open session links the selected work item; with no open
+      session the panel says "No open session — open or start a session
+      first, then link." instead of a raw error.
+- [ ] The rail icon shows the open work item count while browsing; it
+      clears on disconnect, on an empty list, and when no slug is set.
+- [ ] `/plane PROJ-142` still resolves to nothing (null) pending #7.
 
 ## Known needs-tenant risks (from #3, extended on #5)
 

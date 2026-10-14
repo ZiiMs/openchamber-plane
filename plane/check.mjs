@@ -50,6 +50,18 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "Assigned to me", // assigned-to-me control
     "Load more", // paged lists
   ]) if (!src.includes(needle)) fail(`panel/main.js missing browse wiring: ${needle}`); else ok(`browse wiring present: ${needle}`);
+  for (const needle of [
+    "providerId", // chip carries the panel provider id
+    "Attach chip", // attach action
+    "Start session", // new-session action
+    "Link to open session", // open-session link action
+    "Open in Plane", // browse deep link moved behind selection
+    "setBadge", // rail badge
+    "sessionLink", // open-session link call
+    "startSession", // new-session call
+    "NO_SESSION", // clean link-without-session error
+    "No open session", // human wording of that error
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing attach wiring: ${needle}`); else ok(`attach wiring present: ${needle}`);
 }
 
 // --- Ticket #5: pure browse-logic seam (no network) ---
@@ -88,5 +100,37 @@ else {
   eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
   eq(browse.rateLimitDelayMs({ retryAfter: "2", attempt: 0 }), 2000, "Retry-After seconds honored");
   eq(browse.rateLimitDelayMs({ retryAfter: "garbage", attempt: 2 }), 4000, "bad Retry-After falls back to exponential");
+}
+// --- Ticket #6: pure attach-logic seam (no network, no SDK) ---
+// Expected values come from the ticket + host docs (API.md section 1.4:
+// attach id<=128, title<=200, url<=2000; badge 0-999, null clears),
+// not from the code.
+const attach = await import("./attach-logic.mjs").catch(() => null);
+if (!attach) fail("plane/attach-logic.mjs missing");
+else {
+  const eq = (actual, expected, label) => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    else ok(label);
+  };
+  eq(attach.buildAttachItem({ slug: "acme", identifier: "PROJ-142", title: "Fix login" }),
+    { providerId: "plane", id: "PROJ-142", title: "Fix login", url: "https://app.plane.so/acme/browse/PROJ-142/" },
+    "chip carries provider, identifier, title, browse URL");
+  eq(attach.buildAttachItem({ slug: "acme", identifier: "X".repeat(200), title: "t" }).id.length, 128, "chip id clamps to 128");
+  eq(attach.buildAttachItem({ slug: "acme", identifier: "PROJ-1", title: "t".repeat(500) }).title.length, 200, "chip title clamps to 200");
+  eq(attach.buildAttachItem({ slug: "acme", identifier: `P-${"1".repeat(3000)}`, title: "t" }).url.length, 2000, "chip url clamps to 2000");
+  const sessionText = attach.buildSessionText({ identifier: "PROJ-142", title: "Fix login", url: "https://app.plane.so/acme/browse/PROJ-142/", state: "In Progress" });
+  for (const needle of ["PROJ-142", "Fix login", "https://app.plane.so/acme/browse/PROJ-142/", "In Progress"])
+    if (!sessionText.includes(needle)) fail(`session text carries ${needle}`);
+    else ok(`session text carries ${needle}`);
+  eq(attach.countOpenWorkItems([
+    { state: { group: "started" } },
+    { state: { group: "completed" } },
+    { state: { group: "cancelled" } },
+    { name: "sparse row" },
+  ]), 2, "open count skips completed/cancelled, keeps unknown");
+  eq(attach.badgeForOpenCount(false, 5), null, "badge clears when disconnected");
+  eq(attach.badgeForOpenCount(true, 0), null, "badge clears when nothing open");
+  eq(attach.badgeForOpenCount(true, 3), 3, "badge shows open count");
+  eq(attach.badgeForOpenCount(true, 5000), 999, "badge clamps to 999");
 }
 if (process.exitCode) console.error("CHECK FAILED"); else console.log("CHECK PASSED");
