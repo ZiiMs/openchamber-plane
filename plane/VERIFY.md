@@ -16,7 +16,9 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
 
 - [ ] Settings → Integrations → Plane card shows a Connect control.
 - [ ] OAuth connect completes; panel shows "Connected as <display_name>".
-- [ ] The account lookup is `GET /api/v2/users/me/` (host-attached Bearer).
+- [ ] The account lookup is `GET /api/v1/users/me/` (host-attached Bearer);
+      v2 `/api/v2/users/me/` answers 403 for this app, so v1 is the working
+      path for both the account label and the assigned-to-me user id.
 
 ## Disconnect / reconnect
 
@@ -128,9 +130,11 @@ Cloud tenant walks this list once:
 - Canonical web base for browse URLs is assumed
   `https://app.plane.so`; fix `PLANE_WEB_BASE` in `plane/browse-logic.mjs`
   if tenant links live elsewhere, then rebuild + re-check.
-- Sparse `?fields=` names (`id,name,identifier,sequence_id,state`) and the
-  `assignee_id=<users/me id>` value for assigned-to-me are docs-plausible
-  guesses; confirm against a tenant and adjust `browse-logic.mjs`.
+- `?fields=` names and the `assignee_id=<users/me id>` value are confirmed
+  against a tenant. `state` in `fields` is rejected with 400 ("'state' is an
+  expandable relation"), so the list asks for `state_id` and takes the state
+  name/group from `expand=state`. `search`, `state_group__in`, and `offset`
+  paging are confirmed too.
 - Cursor continuation (`paginate=cursor` + `cursor=`) is a guess; offset
   paging is the default path and is covered by the shape tests.
 - `Default project` matches by project id first, then name; confirm which
@@ -138,9 +142,9 @@ Cloud tenant walks this list once:
 
 ## Known needs-tenant risks (from issue #3)
 
-- Authorize/token URLs use the generic OAuth paths
-  (`/auth/o/authorize/`, `/auth/o/token/`). If the host flow expects the
-  Plane-app consent path (`/auth/o/authorize-app/` + `app_installation_id`
-  exchange), update `plane/package.json` and re-run the bundler + check.
-- `read` (global) is requested alongside the fine-grained read scopes so
-  `/api/v2/users/me/` accepts the OAuth token (decided on issue #2).
+- Authorize URL uses the Plane-app consent path
+  (`/auth/o/authorize-app/`); token URL uses `/auth/o/token/` with the
+  user-token (`authorization_code`) exchange.
+- The authorize request must carry an explicit `scope` list; Plane answers
+  `invalid_scope` for an empty/absent one. The five read scopes are what the
+  panel actually uses (`profile:read` for `/api/v2/users/me/`).

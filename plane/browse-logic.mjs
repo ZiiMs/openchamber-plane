@@ -7,8 +7,9 @@
 export const PLANE_WEB_BASE = "https://app.plane.so";
 
 export const WORK_ITEMS_EXPAND = "state,assignees";
-// needs-tenant: confirm the sparse field names the list endpoint honors.
-export const WORK_ITEMS_FIELDS = "id,name,identifier,sequence_id,state";
+// Verified against the tenant: `state` is expandable, not a field, so the
+// list 400s if it appears in `fields`; ask for `state_id` and expand=state.
+export const WORK_ITEMS_FIELDS = "id,name,identifier,sequence_id,state_id";
 export const WORK_ITEMS_PER_PAGE = 25;
 export const STATE_GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"];
 

@@ -340,7 +340,7 @@ async function refreshDiscoveredSlugs(gen: number) {
 }
 
 async function loadAccount(gen: number) {
-  const result = await apiGet(gen, "/api/v2/users/me/");
+  const result = await apiGet(gen, "/api/v1/users/me/");
   if (result.status !== 200) {
     meId = null;
     return;

@@ -16,17 +16,17 @@
         "name": "Plane",
         "description": "Browse and attach Plane work items.",
         "oauth": {
-          "authorizeUrl": "https://api.plane.so/auth/o/authorize/",
+          "authorizeUrl": "https://api.plane.so/auth/o/authorize-app/",
           "tokenUrl": "https://api.plane.so/auth/o/token/",
           "apiOrigin": "https://api.plane.so",
           "scopes": [
-            "read",
-            "projects.work_items:read",
+            "profile:read",
             "projects:read",
+            "projects.work_items:read",
             "projects.states:read",
             "projects.members:read"
           ],
-          "account": { "path": "/api/v2/users/me/", "name": "display_name" }
+          "account": { "path": "/api/v1/users/me/", "name": "display_name" }
         },
         "settings": [
           { "id": "workspace-slug", "label": "Workspace slug" },

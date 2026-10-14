@@ -30,7 +30,10 @@ for (const [path, label] of [
   [c.integration?.oauth?.account?.name, "integration.oauth.account.name"],
 ]) if (!path) fail(`contributes.${label} missing`); else ok(`contributes.${label} = ${path}`);
 if (c.integration?.oauth?.apiOrigin !== "https://api.plane.so") fail("apiOrigin must be https://api.plane.so");
-for (const s of ["read", "projects.work_items:read", "projects:read", "projects.states:read", "projects.members:read"])
+// Plane rejects an empty/absent scope param as invalid_scope, so the manifest
+// must request its read scopes explicitly.
+if (!c.integration?.oauth?.scopes?.length) fail("oauth scopes must be requested (Plane rejects an empty scope)");
+for (const s of ["profile:read", "projects.work_items:read", "projects:read", "projects.states:read", "projects.members:read"])
   if (!c.integration?.oauth?.scopes?.includes(s)) fail(`oauth scope missing: ${s}`); else ok(`scope ${s}`);
 for (const cap of ["prompt", "sessions"])
   if (!c.capabilities?.includes(cap)) fail(`capability missing: ${cap}`); else ok(`capability ${cap}`);
@@ -92,7 +95,7 @@ else {
   eq(browse.browseUrl("acme", "PROJ-142"), "https://app.plane.so/acme/browse/PROJ-142/", "canonical browse URL");
   const base = browse.workItemsQuery({});
   eq(base.expand, "state,assignees", "query expands state+assignees");
-  eq(typeof base.fields === "string" && base.fields.split(",").includes("state"), true, "query trims fields incl. state");
+  eq(typeof base.fields === "string" && base.fields.split(",").includes("state_id"), true, "query trims fields incl. state_id");
   eq(base.per_page, "25", "query pages at 25");
   eq("search" in base || "state_group__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
   const full = browse.workItemsQuery({ search: "api crash", stateGroup: "started", assigneeId: "u1", offset: "25" });
