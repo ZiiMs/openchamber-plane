@@ -23,19 +23,23 @@ import {
   browseUrl,
   isIdentifierQuery,
   isValidSlug,
+  normalizeStates,
   normalizeWorkItem,
   parseDiscoveredWorkspaces,
   parseWorkItemsEnvelope,
   projectsPath,
   rateLimitDelayMs,
-  STATE_GROUPS,
+  statesPath,
+  statesQuery,
+  stateTone,
   workItemByIdentifierPath,
   workItemsPath,
   workItemsQuery,
   WORKSPACES_DISCOVERY_PATH,
 } from "../browse-logic.mjs";
 
-type Row = { id: string; identifier: string; title: string; state: string; url: string };
+type Row = { id: string; identifier: string; title: string; state: string; stateGroup: string | null; url: string };
+type State = { id: string; name: string; group: string | null; sequence: number | null };
 type Page = { kind: "offset" | "cursor"; next: number | string } | null;
 
 const REQUEST_TIMEOUT_MS = 20000;
@@ -195,8 +199,10 @@ let settings = { slug: "", defaultProject: "" };
 let connected = false;
 let account: string | null = null;
 let meId: string | null = null;
-let filters = { search: "", stateGroup: "", mine: false, projectId: "" };
+let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
+let states: State[] = [];
+let stateSelect: ReturnType<typeof mountSelect> | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
@@ -214,6 +220,7 @@ const paint = async () => {
   clear(results);
   listBox = null;
   footerBox = null;
+  stateSelect = null;
   if (!connected) {
     openCount = 0;
     serverTotal = null;
@@ -250,7 +257,10 @@ const paint = async () => {
     return;
   }
   const slug = settings.slug;
-  mounted.push(mountText(root, { text: `Connected as ${account ?? "Plane user"}.` }));
+  // The host sends an empty account string before the name is known; `??`
+  // alone would render "Connected as ." (issue #10).
+  const who = typeof account === "string" && account.trim() ? account.trim() : "Plane user";
+  mounted.push(mountText(root, { text: `Connected as ${who}.` }));
   const spinner = mountSpinner(root, { label: "Loading Plane projects" });
   mounted.push(spinner);
   try {
@@ -300,18 +310,24 @@ const paint = async () => {
     options: projects.map((p) => ({ id: p.id, label: p.name })),
     onChange: (id) => {
       filters.projectId = id;
-      void reload(gen, slug, false);
+      filters.stateId = "";
+      void (async () => {
+        await refreshStates(gen, slug, id);
+        if (gen !== generation) return;
+        void reload(gen, slug, false);
+      })();
     },
   }));
-  mounted.push(mountSelect(stateBox, {
-    label: "State group",
-    value: filters.stateGroup || null,
-    options: [{ id: "", label: "All" }, ...STATE_GROUPS.map((g) => ({ id: g, label: g }))],
+  stateSelect = mountSelect(stateBox, {
+    label: "State",
+    value: filters.stateId || null,
+    options: stateOptions(),
     onChange: (id) => {
-      filters.stateGroup = id;
+      filters.stateId = id;
       void reload(gen, slug, false);
     },
-  }));
+  });
+  mounted.push(stateSelect);
   mounted.push(mountCheckbox(mineBox, {
     label: "Assigned to me",
     checked: filters.mine,
@@ -321,6 +337,8 @@ const paint = async () => {
     },
   }));
   mounted.push(mountText(footerBox, { text: "Select a row, then open, attach, start a session, or link it." }));
+  // Best effort: a states failure leaves the State control with "All" alone.
+  await refreshStates(gen, slug, filters.projectId);
   await reload(gen, slug, false);
 };
 
@@ -360,10 +378,30 @@ async function loadProjects(gen: number, slug: string) {
     .map((p) => ({ id: p.id as string, name: typeof p.name === "string" && p.name ? p.name : (p.id as string) }));
 }
 
+const stateOptions = () => [
+  { id: "", label: "All" },
+  ...states.map((s) => ({ id: s.id, label: s.name, hint: s.group ?? undefined })),
+];
+
+// Best-effort states for the State control (issue #10): any failure leaves the
+// filter at "All" and the list usable.
+async function refreshStates(gen: number, slug: string, projectId: string) {
+  states = [];
+  try {
+    const result = await apiGet(gen, statesPath(slug, projectId), statesQuery());
+    if (result.status === 200) states = normalizeStates(JSON.parse(result.body));
+  } catch {
+    states = [];
+  }
+  if (gen !== generation) return;
+  if (filters.stateId && !states.some((s) => s.id === filters.stateId)) filters.stateId = "";
+  stateSelect?.update({ options: stateOptions(), value: filters.stateId || null });
+}
+
 const currentQuery = (nextPage: Page) => {
   const query = workItemsQuery({
     search: filters.search || undefined,
-    stateGroup: filters.stateGroup || undefined,
+    stateId: filters.stateId || undefined,
     // needs-tenant: confirm assignee_id accepts the users/me id for "my" work.
     assigneeId: filters.mine ? meId ?? undefined : undefined,
     offset: nextPage?.kind === "offset" ? String(nextPage.next) : undefined,
@@ -461,7 +499,8 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     ariaLabel: "Plane work items",
     emptyText: "No work items match.",
     selectedId,
-    items: rows.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, subtitle: r.state })),
+    // The state is a pill now, not a second line (issue #10).
+    items: rows.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: { label: r.state, tone: stateTone(r.stateGroup) } })),
     onSelect: (id) => {
       selectedId = id;
       actionNote = "";

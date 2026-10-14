@@ -1,5 +1,6 @@
 // Pure Plane browse helpers for issue #5: request paths, query shapes,
 // v2 envelope branching, row normalization, browse URLs, rate-limit backoff.
+// Issue #10 adds the per-project states the panel filters and names rows by.
 // No DOM, no SDK, no network — exercised directly by plane/check.mjs.
 // Field/value guesses that still need a tenant are marked needs-tenant.
 
@@ -11,10 +12,35 @@ export const WORK_ITEMS_EXPAND = "state,assignees";
 // list 400s if it appears in `fields`; ask for `state_id` and expand=state.
 export const WORK_ITEMS_FIELDS = "id,name,identifier,sequence_id,state_id";
 export const WORK_ITEMS_PER_PAGE = 25;
-export const STATE_GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"];
+
+// Pill tone per state group: the kit badge carries six tones, not Plane's
+// per-state colours. `triage` is mapped for completeness; the default
+// work-item list never returns triage items.
+const STATE_TONES = {
+  backlog: "neutral",
+  unstarted: "neutral",
+  started: "info",
+  completed: "success",
+  cancelled: "error",
+  triage: "warning",
+};
+
+export function stateTone(group) {
+  return STATE_TONES[group] ?? "neutral";
+}
 
 export function projectsPath(slug) {
   return `/api/v2/workspaces/${slug}/projects/`;
+}
+
+// States are defined per project; `order_by=sequence` is the project's own
+// workflow order, which the filter and the section order both follow.
+export function statesPath(slug, projectId) {
+  return `/api/v2/workspaces/${slug}/projects/${projectId}/states/`;
+}
+
+export function statesQuery() {
+  return { order_by: "sequence", per_page: "50" };
 }
 
 export function workItemsPath(slug, projectId) {
@@ -48,10 +74,12 @@ export function isIdentifierQuery(value) {
 }
 
 // Flat string map: host.request takes query?: Record<string, string>.
-export function workItemsQuery({ search, stateGroup, assigneeId, offset, perPage } = {}) {
+// Filtering is by state (`state_id__in`), not by state group: the states a
+// project actually uses are what the panel offers (issue #10).
+export function workItemsQuery({ search, stateId, assigneeId, offset, perPage } = {}) {
   const query = { expand: WORK_ITEMS_EXPAND, fields: WORK_ITEMS_FIELDS, per_page: String(perPage ?? WORK_ITEMS_PER_PAGE) };
   if (search) query.search = search;
-  if (stateGroup) query.state_group__in = stateGroup;
+  if (stateId) query.state_id__in = stateId;
   if (assigneeId) query.assignee_id = assigneeId;
   if (offset !== undefined && offset !== null) query.offset = String(offset);
   return query;
@@ -75,6 +103,24 @@ export function parseWorkItemsEnvelope(payload) {
   return { items, page: next === null ? null : { kind: "offset", next }, totalCount };
 }
 
+// A project's states: {id, name, group, sequence}. Rows without an id drop.
+export function normalizeState(raw) {
+  if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
+  return {
+    id: raw.id,
+    name: typeof raw.name === "string" && raw.name ? raw.name : raw.id,
+    group: typeof raw.group === "string" ? raw.group : null,
+    sequence: typeof raw.sequence === "number" ? raw.sequence : null,
+  };
+}
+
+// v2 envelope ({data, …}) or a bare array, keeping the server's order
+// (order_by=sequence is the project's workflow order).
+export function normalizeStates(payload) {
+  const items = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+  return items.map(normalizeState).filter((state) => state !== null);
+}
+
 // Defensive: expanded state object, sparse state_id, or bust.
 export function normalizeWorkItem(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -88,7 +134,8 @@ export function normalizeWorkItem(raw) {
     (typeof raw.state?.group === "string" && raw.state.group) ||
     (typeof raw.state_id === "string" && raw.state_id) ||
     "—";
-  return { id: typeof raw.id === "string" ? raw.id : identifier, identifier, title, state };
+  const stateGroup = typeof raw.state?.group === "string" ? raw.state.group : null;
+  return { id: typeof raw.id === "string" ? raw.id : identifier, identifier, title, state, stateGroup };
 }
 
 export function browseUrl(slug, identifier) {

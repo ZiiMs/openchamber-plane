@@ -125,6 +125,29 @@ Cloud tenant walks this list once:
       `/plane <id>` command-attach → chip on the chat box → session with
       the chip attached.
 
+## State pill and State filter (issue #10)
+
+Pure seams without a tenant: `node plane/check.mjs` covers the states path and
+query (`order_by=sequence`), state normalization (envelope or bare array,
+sparse rows dropped), the work-item query's `state_id__in` and the absence of
+`state_group__in`, the pill's tone map per state group, and the panel bundle's
+state wiring. A human with a Plane Cloud tenant walks this list once:
+
+- [ ] Rows carry a pill with the state name (e.g. "In Progress"), toned by the
+      state's group (started → info, completed → success, cancelled → error,
+      backlog/unstarted → neutral); the muted second line is gone.
+- [ ] The State control lists the project's states in the project's workflow
+      order with the group as a hint and "All" first; the state-group control
+      is gone.
+- [ ] Picking "In Progress" (or "In Review") narrows the list to that state —
+      a filter the v1 state-group control could not express.
+- [ ] Switching project re-loads the states and clears a state the new project
+      does not have.
+- [ ] With `GET …/states/` failing, the list still loads with "All" and no
+      state options.
+- [ ] The account line reads "Connected as <name>", or "Plane user" — never
+      "Connected as .".
+
 ## Known needs-tenant risks (from issue #3, extended on issue #5)
 
 - Canonical web base for browse URLs is assumed

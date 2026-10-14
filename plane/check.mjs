@@ -51,7 +51,10 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
   else ok("panel/main.js is a classic script");
   if (!src.includes("Not connected")) fail("panel/main.js missing not-connected empty state"); else ok("not-connected empty state present");
   for (const needle of [
-    "state_group__in", // work-item list carries the state-group filter
+    "state_id__in", // work-item list carries the state filter (issue #10)
+    "/states/", // states come from the project's own workflow (issue #10)
+    "order_by", // states are asked for in workflow order
+    "Plane user", // an empty account name falls back instead of "Connected as ."
     "assignee_id", // work-item list carries the assigned-to-me filter
     "/work-items/", // work-item list / by-identifier paths
     "users/me/workspaces", // opportunistic workspace auto-discovery path
@@ -97,9 +100,10 @@ else {
   eq(base.expand, "state,assignees", "query expands state+assignees");
   eq(typeof base.fields === "string" && base.fields.split(",").includes("state_id"), true, "query trims fields incl. state_id");
   eq(base.per_page, "25", "query pages at 25");
-  eq("search" in base || "state_group__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
-  const full = browse.workItemsQuery({ search: "api crash", stateGroup: "started", assigneeId: "u1", offset: "25" });
-  eq([full.search, full.state_group__in, full.assignee_id, full.offset], ["api crash", "started", "u1", "25"], "query carries search/filter/offset");
+  eq("search" in base || "state_id__in" in base || "assignee_id" in base, false, "empty filters send no filter keys");
+  const full = browse.workItemsQuery({ search: "api crash", stateId: "s1", assigneeId: "u1", offset: "25" });
+  eq([full.search, full.state_id__in, full.assignee_id, full.offset], ["api crash", "s1", "u1", "25"], "query carries search/filter/offset");
+  eq("state_group__in" in full, false, "the state-group filter is gone (issue #10)");
   const off = browse.parseWorkItemsEnvelope({ data: [{ id: "a" }], next: 25, total_count: 60, pagination: { style: "offset" } });
   eq([off.items.length, off.page], [1, { kind: "offset", next: 25 }], "offset envelope page");
   eq(off.totalCount, 60, "offset envelope carries total_count for the badge");
@@ -110,8 +114,28 @@ else {
   eq([cur.items.length, cur.page], [1, { kind: "cursor", next: "abc" }], "cursor envelope page");
   eq(browse.parseWorkItemsEnvelope({ data: [], next_cursor: null, has_more: false, pagination: { style: "cursor" } }).page, null, "cursor envelope end");
   eq(browse.normalizeWorkItem({ id: "u", name: "Fix login", identifier: "ACME-7", state: { name: "In Progress", group: "started" } }),
-    { id: "u", identifier: "ACME-7", title: "Fix login", state: "In Progress" }, "row shows identifier, title, state");
+    { id: "u", identifier: "ACME-7", title: "Fix login", state: "In Progress", stateGroup: "started" }, "row shows identifier, title, state, state group");
   eq(browse.normalizeWorkItem({ id: "u", name: "Sparse", state_id: "s1" }).state, "s1", "sparse state falls back to state_id");
+  eq(browse.normalizeWorkItem({ id: "u", name: "Sparse", state_id: "s1" }).stateGroup, null, "a sparse state has no group");
+  // --- Issue #10: the project's states and the pill's tone ---
+  // Expected values come from the Plane v2 states endpoint and the issue, not
+  // from the code: `order_by=sequence` is the project's workflow order.
+  eq(browse.statesPath("acme", "p1"), "/api/v2/workspaces/acme/projects/p1/states/", "states path");
+  eq(browse.statesQuery().order_by, "sequence", "states are asked for in workflow order");
+  eq(browse.normalizeState({ id: "s1", name: "In Progress", group: "started", sequence: 25000 }),
+    { id: "s1", name: "In Progress", group: "started", sequence: 25000 }, "state normalises");
+  eq(browse.normalizeState({ id: "s2" }), { id: "s2", name: "s2", group: null, sequence: null }, "a sparse state keeps its id as the name");
+  for (const bad of [null, undefined, "nope", 42, {}, { name: "no id" }, { id: "" }]) eq(browse.normalizeState(bad), null, `state rejects ${JSON.stringify(bad)}`);
+  eq(browse.normalizeStates({ data: [{ id: "a", name: "Todo", group: "unstarted" }, { name: "no id" }], next: null }).map((s) => s.name), ["Todo"], "states unwrap the envelope and drop sparse rows");
+  eq(browse.normalizeStates([{ id: "a", name: "A" }, { id: "b", name: "B" }]).length, 2, "states accept a bare array");
+  for (const bad of [null, undefined, "nope", 42, {}]) eq(browse.normalizeStates(bad), [], `states reject ${JSON.stringify(bad)}`);
+  eq(browse.stateTone("started"), "info", "started is info");
+  eq(browse.stateTone("completed"), "success", "completed is success");
+  eq(browse.stateTone("cancelled"), "error", "cancelled is error");
+  eq(browse.stateTone("backlog"), "neutral", "backlog is neutral");
+  eq(browse.stateTone("unstarted"), "neutral", "unstarted is neutral");
+  eq(browse.stateTone(undefined), "neutral", "an unknown state group is neutral");
+  eq("STATE_GROUPS" in browse, false, "the state-group constant is gone (issue #10)");
   eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
   eq(browse.rateLimitDelayMs({ retryAfter: "2", attempt: 0 }), 2000, "Retry-After seconds honored");
   eq(browse.rateLimitDelayMs({ retryAfter: "garbage", attempt: 2 }), 4000, "bad Retry-After falls back to exponential");
@@ -172,7 +196,7 @@ else {
   for (const bad of ["", "   ", "just words", "PROJ-", "142", "PROJ 142", "attach PROJ-142"]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects ${JSON.stringify(bad)}`);
   for (const bad of [undefined, null, 123, {}, []]) eq(resolveLogic.parseCommandArgs(bad), null, `command arg rejects non-string ${JSON.stringify(bad)}`);
   eq(resolveLogic.resolveWorkItem({ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "In Progress", group: "started" } }),
-    { id: "u", identifier: "PROJ-142", title: "Fix login", state: "In Progress" }, "resolve unwraps a bare work item");
+    { id: "u", identifier: "PROJ-142", title: "Fix login", state: "In Progress", stateGroup: "started" }, "resolve unwraps a bare work item");
   eq(resolveLogic.resolveWorkItem({ data: [{ id: "u", name: "Fix login", identifier: "PROJ-142", state: { name: "Todo", group: "unstarted" } }] })?.identifier,
     "PROJ-142", "resolve unwraps a {data:[…]} envelope");
   eq(resolveLogic.resolveWorkItem({ data: { id: "u", name: "Fix login", identifier: "PROJ-142" } })?.identifier,
