@@ -5,7 +5,7 @@
 // browse-logic.mjs) and shapes the chip via buildAttachItem from
 // attach-logic.mjs; unknown/bad identifiers resolve to null (nothing found,
 // no chip, no error toast).
-import { isIdentifierQuery, normalizeWorkItem } from "./browse-logic.mjs";
+import { isIdentifierQuery, normalizeWorkItem, unwrapSingle } from "./browse-logic.mjs";
 
 // "/plane PROJ-142" -> "PROJ-142". Only the first whitespace-separated
 // token counts; anything else (blank, prose, a bare number, a non-string)
@@ -22,12 +22,7 @@ export function parseCommandArgs(args) {
 // or {data:{…}} — v2 list endpoints envelope, the single fetch may too)
 // into a normalized row, or null when there is nothing to attach.
 export function resolveWorkItem(parsed) {
-  const single = Array.isArray(parsed?.data)
-    ? (parsed.data[0] ?? null)
-    : parsed?.data && typeof parsed.data === "object"
-      ? parsed.data
-      : parsed;
-  const row = normalizeWorkItem(single);
+  const row = normalizeWorkItem(unwrapSingle(parsed));
   if (!row || !row.identifier) return null;
   return row;
 }

@@ -3,8 +3,10 @@
 // exercised directly by plane/check.mjs. The description HTML is parsed here
 // into an allow-listed tree (issue #13); the panel only ever builds elements
 // from that tree, so nothing in a Plane description can become markup.
+import { unwrapSingle } from "./browse-logic.mjs";
 
 // The relations the modal renders (Plane v2 `expand`).
+// needs-tenant: the expand set is documented for v2, not yet walked.
 export const DETAIL_EXPAND = "state,assignees,labels";
 
 export function detailQuery() {
@@ -40,11 +42,7 @@ export function relationNames(value) {
 // {data: {…}} or {data: [ … ]} all unwrap, and every missing field hides
 // rather than rendering "undefined".
 export function shapeWorkItemDetail(payload) {
-  const raw = Array.isArray(payload?.data)
-    ? (payload.data[0] ?? null)
-    : payload?.data && typeof payload.data === "object"
-      ? payload.data
-      : payload;
+  const raw = unwrapSingle(payload);
   if (!raw || typeof raw !== "object") return null;
   const identifier = typeof raw.identifier === "string" && raw.identifier ? raw.identifier : null;
   if (!identifier) return null;

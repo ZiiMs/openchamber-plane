@@ -14,15 +14,14 @@ export const WORK_ITEMS_FIELDS = "id,name,identifier,sequence_id,state_id";
 export const WORK_ITEMS_PER_PAGE = 25;
 
 // Pill tone per state group: the kit badge carries six tones, not Plane's
-// per-state colours. `triage` is mapped for completeness; the default
-// work-item list never returns triage items.
+// per-state colours. Anything else — including the triage group, which the
+// default work-item list never returns — stays neutral.
 const STATE_TONES = {
   backlog: "neutral",
   unstarted: "neutral",
   started: "info",
   completed: "success",
   cancelled: "error",
-  triage: "warning",
 };
 
 export function stateTone(group) {
@@ -35,6 +34,8 @@ export function projectsPath(slug) {
 
 // States are defined per project; `order_by=sequence` is the project's own
 // workflow order, which the filter and the section order both follow.
+// needs-tenant: the states path and its order_by/per_page are documented for
+// v2, not yet walked against a tenant.
 export function statesPath(slug, projectId) {
   return `/api/v2/workspaces/${slug}/projects/${projectId}/states/`;
 }
@@ -79,6 +80,7 @@ export function isIdentifierQuery(value) {
 export function workItemsQuery({ search, stateId, assigneeId, offset, perPage } = {}) {
   const query = { expand: WORK_ITEMS_EXPAND, fields: WORK_ITEMS_FIELDS, per_page: String(perPage ?? WORK_ITEMS_PER_PAGE) };
   if (search) query.search = search;
+  // needs-tenant: state_id__in is documented for v2, not yet walked.
   if (stateId) query.state_id__in = stateId;
   if (assigneeId) query.assignee_id = assigneeId;
   if (offset !== undefined && offset !== null) query.offset = String(offset);
@@ -103,14 +105,14 @@ export function parseWorkItemsEnvelope(payload) {
   return { items, page: next === null ? null : { kind: "offset", next }, totalCount };
 }
 
-// A project's states: {id, name, group, sequence}. Rows without an id drop.
+// A project's states: {id, name, group}. Rows without an id drop. The server's
+// order (order_by=sequence) is the workflow order, so it is not re-sorted here.
 export function normalizeState(raw) {
   if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
   return {
     id: raw.id,
     name: typeof raw.name === "string" && raw.name ? raw.name : raw.id,
     group: typeof raw.group === "string" ? raw.group : null,
-    sequence: typeof raw.sequence === "number" ? raw.sequence : null,
   };
 }
 
@@ -121,13 +123,20 @@ export function normalizeStates(payload) {
   return items.map(normalizeState).filter((state) => state !== null);
 }
 
+// A single-object fetch may answer bare, {data:{…}} or {data:[…]} (v2
+// envelopes its lists; the direct fetch may follow).
+export function unwrapSingle(parsed) {
+  return Array.isArray(parsed?.data) ? (parsed.data[0] ?? null) : parsed?.data && typeof parsed.data === "object" ? parsed.data : parsed;
+}
+
 // Sections for the grouped list (issue #11): the project's workflow order
-// first, work items whose state is not in that list last.
+// first, then one trailing section for every work item whose state is not in
+// the project's list (so an unreadable state is never its own section).
 export function groupRowsByState(rows, states) {
   const rank = new Map(states.map((state, index) => [state.name, index]));
   const sections = new Map();
   for (const row of rows) {
-    const name = row.state || "—";
+    const name = rank.has(row.state) ? row.state : "No state";
     const section = sections.get(name);
     if (section) section.rows.push(row);
     else sections.set(name, { state: name, rows: [row] });

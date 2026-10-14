@@ -35,6 +35,7 @@ import {
   statesPath,
   statesQuery,
   stateTone,
+  unwrapSingle,
   workItemByIdentifierPath,
   workItemsPath,
   workItemsQuery,
@@ -214,14 +215,13 @@ async function linkSelected(gen: number) {
   }
 }
 
-// Detail modal (issue #12). The kit has no modal primitive, so it is composed
-// from the host theme tokens; the row click that selects the row opens it.
+// Closing hands focus back to the selected row: the re-render that opened the
+// modal rebuilt it, so the live row is found in the list rather than remembered.
 const closeDetail = () => {
   if (!modal) return;
   modal.dispose();
   modal = null;
-  focusBeforeModal?.focus?.();
-  focusBeforeModal = null;
+  listBox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus();
 };
 
 // Description rendering (issue #13): the tree from parseDescriptionHtml is
@@ -260,6 +260,10 @@ const renderRich = (nodes: RichNode[]): DocumentFragment => {
   return frag;
 };
 
+// Detail modal (issue #12). The kit has no modal primitive, so it is composed
+// from the host theme tokens; the row click that selects the row opens it.
+const statePill = (state: string, stateGroup: string | null) => ({ label: state, tone: stateTone(stateGroup) });
+
 const detailRow = (label: string, value: string | null, pill?: { label: string; tone: string }) => {
   if (!pill && !value) return null;
   const row = document.createElement("div");
@@ -282,7 +286,6 @@ const detailRow = (label: string, value: string | null, pill?: { label: string; 
 
 async function openDetail(gen: number, row: Row) {
   closeDetail();
-  focusBeforeModal = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
   const card = document.createElement("div");
@@ -321,7 +324,8 @@ async function openDetail(gen: number, row: Row) {
   try {
     const result = await apiGet(gen, workItemByIdentifierPath(settings.slug, row.identifier), detailQuery());
     if (result.status === 200) detail = shapeWorkItemDetail(JSON.parse(result.body)) as Detail | null;
-    else failure = { tone: "warning", body: `Plane answered ${result.status}. It may have been archived since the list loaded.` };
+    else if (result.status === 404) failure = { tone: "warning", body: "Plane has no such work item — it may have been archived since the list loaded." };
+    else failure = { tone: "error", body: `Plane answered ${result.status} for this work item.` };
   } catch (error) {
     failure = { tone: "error", body: describeError(error) };
   }
@@ -341,7 +345,7 @@ async function openDetail(gen: number, row: Row) {
     const body = document.createElement("div");
     body.style.cssText = "display:flex;flex-direction:column;gap:6px;";
     for (const node of [
-      detailRow("State", null, { label: detail.state, tone: stateTone(detail.stateGroup) }),
+      detailRow("State", null, statePill(detail.state, detail.stateGroup)),
       detailRow("Priority", detail.priority),
       detailRow("Assignees", detail.assignees.join(", ") || null),
       detailRow("Start", detail.startDate),
@@ -383,7 +387,6 @@ let projects: Array<{ id: string; name: string }> = [];
 let states: State[] = [];
 let stateSelect: ReturnType<typeof mountSelect> | null = null;
 let modal: { dispose: () => void } | null = null;
-let focusBeforeModal: HTMLElement | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let selectedId: string | null = null;
@@ -574,7 +577,7 @@ const stateOptions = () => [
 async function refreshStates(gen: number, slug: string, projectId: string) {
   states = [];
   try {
-    const result = await apiGet(gen, statesPath(slug, projectId), statesQuery());
+    const result = await apiGetWithBackoff(gen, statesPath(slug, projectId), statesQuery());
     if (result.status === 200) states = normalizeStates(JSON.parse(result.body));
   } catch {
     states = [];
@@ -648,10 +651,7 @@ async function reload(gen: number, slug: string, append: boolean) {
     if (!append && isIdentifierQuery(filters.search)) {
       const direct = await apiGet(gen, workItemByIdentifierPath(slug, filters.search.trim()));
       if (direct.status === 200) {
-        const body = JSON.parse(direct.body) as unknown;
-        const single = Array.isArray((body as { data?: unknown })?.data)
-          ? (body as { data: unknown[] }).data[0]
-          : body;
+        const single = unwrapSingle(JSON.parse(direct.body));
         const row = normalizeWorkItem(single);
         if (row && !seen.has(row.id)) {
           seen.add(row.id);
@@ -693,7 +693,7 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     emptyText: "No work items match.",
     selectedId,
     // The state is a pill now, not a second line (issue #10).
-    items: items.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: { label: r.state, tone: stateTone(r.stateGroup) } })),
+    items: items.map((r) => ({ id: r.id, leading: r.identifier, title: r.title, badge: statePill(r.state, r.stateGroup) })),
     onSelect,
   });
   // Sections by state (issue #11); a flat list while a state is filtered.

@@ -60,8 +60,8 @@ A human with a Plane Cloud tenant walks this list once:
 - [ ] Work-item rows show work item identifier, title, and state.
 - [ ] Search by text narrows the list; search by identifier (e.g. PROJ-142)
       surfaces the exact work item even when `?search=` alone would miss it.
-- [ ] State-group control (backlog, unstarted, started, completed,
-      cancelled) and Assigned to me narrow the list correctly.
+- [ ] Assigned to me narrows the list correctly. (The workflow filter is the
+      State control now — see "State pill and State filter" below.)
 - [ ] Scrolling past 25 rows offers Load more and appends the next page.
 - [ ] Selecting a row highlights it and enables the row actions below;
       Open in Plane opens `{web-base}/{slug}/browse/{identifier}/` in
@@ -121,7 +121,7 @@ Cloud tenant walks this list once:
       list plus rows come from the new workspace) and `/plane <id>`
       resolves against the new workspace.
 - [ ] Full walk-through on a scratch workspace, in order: connect → browse
-      (search plus state-group filter surface the work item) →
+      (search plus the State filter surface the work item) →
       `/plane <id>` command-attach → chip on the chat box → session with
       the chip attached.
 
@@ -133,7 +133,7 @@ sparse rows dropped), the work-item query's `state_id__in` and the absence of
 `state_group__in`, the pill's tone map per state group, and the panel bundle's
 state wiring. A human with a Plane Cloud tenant walks this list once:
 
-- [ ] Rows carry a pill with the state name (e.g. "In Progress"), toned by the
+- [ ] Rows carry a pill with their state (e.g. "In Progress"), toned by the
       state's group (started → info, completed → success, cancelled → error,
       backlog/unstarted → neutral); the muted second line is gone.
 - [ ] The State control lists the project's states in the project's workflow
@@ -151,12 +151,13 @@ state wiring. A human with a Plane Cloud tenant walks this list once:
 ## Grouped list (issue #11)
 
 Pure seams without a tenant: `node plane/check.mjs` covers section bucketing,
-section order (the project's workflow order, unreadable states last), row order
-inside a section, and the section label. A human with a Plane Cloud tenant
-walks this list once:
+section order (the project's workflow order, unreadable states in one trailing
+section), row order inside a section, and the section label. A human with a
+Plane Cloud tenant walks this list once:
 
 - [ ] The list renders as sections, one per state, in the project's workflow
-      order, with anything whose state cannot be read in a final section.
+      order, with anything whose state cannot be read sharing a final
+      "No state" section.
 - [ ] Each header reads "<state> · <count>", and the count matches the rows
       shown under it.
 - [ ] Rows stay newest-first inside a section.
@@ -210,8 +211,13 @@ like a browser would. A human with a Plane Cloud tenant walks this list once:
 - `?fields=` names and the `assignee_id=<users/me id>` value are confirmed
   against a tenant. `state` in `fields` is rejected with 400 ("'state' is an
   expandable relation"), so the list asks for `state_id` and takes the state
-  name/group from `expand=state`. `search`, `state_group__in`, and `offset`
-  paging are confirmed too.
+  name/group from `expand=state`. `search` and `offset` paging are confirmed
+  too; `state_group__in` was, but the panel sends `state_id__in` now.
+- The per-project states path, its `order_by=sequence` order, the
+  `state_id__in` work-item filter, and the detail fetch's
+  `expand=state,assignees,labels` are documented for v2 and marked
+  `needs-tenant` in `plane/browse-logic.mjs` and `plane/detail-logic.mjs`;
+  the state and detail sections above are the walk that confirms them.
 - Cursor continuation (`paginate=cursor` + `cursor=`) is a guess; offset
   paging is the default path and is covered by the shape tests.
 - `Default project` matches by project id first, then name; confirm which

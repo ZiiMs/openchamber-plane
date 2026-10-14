@@ -130,12 +130,16 @@ else {
   eq(browse.statesPath("acme", "p1"), "/api/v2/workspaces/acme/projects/p1/states/", "states path");
   eq(browse.statesQuery().order_by, "sequence", "states are asked for in workflow order");
   eq(browse.normalizeState({ id: "s1", name: "In Progress", group: "started", sequence: 25000 }),
-    { id: "s1", name: "In Progress", group: "started", sequence: 25000 }, "state normalises");
-  eq(browse.normalizeState({ id: "s2" }), { id: "s2", name: "s2", group: null, sequence: null }, "a sparse state keeps its id as the name");
+    { id: "s1", name: "In Progress", group: "started" }, "state normalises to id, name and group");
+  eq(browse.normalizeState({ id: "s2" }), { id: "s2", name: "s2", group: null }, "a sparse state keeps its id as the name");
   for (const bad of [null, undefined, "nope", 42, {}, { name: "no id" }, { id: "" }]) eq(browse.normalizeState(bad), null, `state rejects ${JSON.stringify(bad)}`);
   eq(browse.normalizeStates({ data: [{ id: "a", name: "Todo", group: "unstarted" }, { name: "no id" }], next: null }).map((s) => s.name), ["Todo"], "states unwrap the envelope and drop sparse rows");
   eq(browse.normalizeStates([{ id: "a", name: "A" }, { id: "b", name: "B" }]).length, 2, "states accept a bare array");
   for (const bad of [null, undefined, "nope", 42, {}]) eq(browse.normalizeStates(bad), [], `states reject ${JSON.stringify(bad)}`);
+  eq(browse.unwrapSingle({ data: [{ id: "a" }] }), { id: "a" }, "unwrap takes the first of a data array");
+  eq(browse.unwrapSingle({ data: { id: "a" } }), { id: "a" }, "unwrap takes a data object");
+  eq(browse.unwrapSingle({ id: "a" }), { id: "a" }, "unwrap passes a bare item");
+  eq(browse.unwrapSingle({ data: [] }), null, "unwrap gives null for an empty array");
   eq(browse.stateTone("started"), "info", "started is info");
   eq(browse.stateTone("completed"), "success", "completed is success");
   eq(browse.stateTone("cancelled"), "error", "cancelled is error");
@@ -159,9 +163,10 @@ else {
     { id: "e", state: "Todo" },
   ];
   const sections = browse.groupRowsByState(groupedRows, stateList);
-  eq(sections.map((s) => s.state), ["Todo", "In Progress", "Done", "Mystery"], "sections follow the workflow order, unreadable states last");
+  eq(sections.map((s) => s.state), ["Todo", "In Progress", "Done", "No state"], "sections follow the workflow order, unreadable states last");
   eq(sections[2].rows.map((r) => r.id), ["a", "c"], "rows keep their order inside a section");
-  eq(browse.groupRowsByState([{ id: "x" }], stateList).at(-1).state, "—", "a row without a state lands last");
+  eq(browse.groupRowsByState([{ id: "x" }, { id: "y", state: "Mystery" }, { id: "z", state_id: "s9" }], stateList).map((s) => [s.state, s.rows.length]),
+    [["No state", 3]], "every unreadable state shares one trailing section");
   eq(browse.groupRowsByState([], stateList), [], "no rows, no sections");
   eq(browse.sectionLabel({ state: "In Progress", rows: [{}, {}] }), "In Progress · 2", "the section label names the state and the loaded rows");
   eq(browse.rateLimitDelayMs({ attempt: 0 }), 1000, "backoff base 1s");
@@ -273,6 +278,8 @@ else {
   eq(detail.parseDescriptionHtml("<p>Loop <b>now</b></p>"),
     [{ tag: "p", children: [{ text: "Loop " }, { tag: "b", children: [{ text: "now" }] }] }], "allow-listed tags build a tree");
   eq(detail.parseDescriptionHtml("<script>alert(1)</script>"), [{ text: "alert(1)" }], "a dropped tag keeps its text");
+  eq(detail.parseDescriptionHtml('<style>p{color:red}</style><iframe src="https://x"></iframe>ok'),
+    [{ text: "p{color:red}" }, { text: "ok" }], "style and frame tags drop, their text stays");
   eq(detail.parseDescriptionHtml('<img src=x onerror="alert(1)"><p onclick="alert(1)">ok</p>'),
     [{ tag: "p", children: [{ text: "ok" }] }], "attributes are dropped with their tags");
   eq(detail.parseDescriptionHtml('<a href="https://app.plane.so/x" target="_blank">Plane</a>'),
