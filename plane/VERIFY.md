@@ -58,8 +58,8 @@ badge, row normalization
 (identifier/title/state), canonical browse URLs, and backoff delays.
 A human with a Plane Cloud tenant walks this list once:
 
-- [ ] Set Workspace slug + Default project; panel lists projects with the
-      default pre-selected in the Project control.
+- [ ] Set Workspace slug + Default project; the unified filter bar shows
+      the default project pre-selected in its project menu.
 - [ ] Work-item rows show work item identifier, title, and state.
 - [ ] Search by text narrows the list; search by identifier (e.g. PROJ-142)
       surfaces the exact work item even when `?search=` alone would miss it.
@@ -139,8 +139,8 @@ state wiring. A human with a Plane Cloud tenant walks this list once:
 - [ ] Rows carry a pill with their state (e.g. "In Progress"), toned by the
       state's group (started → info, completed → success, cancelled → error,
       backlog/unstarted → neutral); the muted second line is gone.
-- [ ] The State control lists the project's states in the project's workflow
-      order with the group as a hint and "All" first; the state-group control
+- [ ] The State menu in the filter bar lists the project's states in the project's workflow
+      order with "All states" first; the state-group control
       is gone.
 - [ ] Picking "In Progress" (or "In Review") narrows the list to that state —
       a filter the v1 state-group control could not express.

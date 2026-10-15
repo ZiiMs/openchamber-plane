@@ -5,11 +5,9 @@ import {
   mountBadge,
   mountBanner,
   mountButton,
-  mountCheckbox,
   mountEmpty,
   mountList,
-  mountSearchField,
-  mountSelect,
+  mountMenu,
   mountSpinner,
   mountText,
 } from "@openchamber/sdk/ui";
@@ -471,7 +469,7 @@ let meId: string | null = null;
 let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
 let states: State[] = [];
-let stateSelect: ReturnType<typeof mountSelect> | null = null;
+let stateMenu: ReturnType<typeof mountMenu> | null = null;
 let modal: { dispose: () => void } | null = null;
 // Where the host mounted this frame, and what it advertises: the detail card
 // pops out of the panel only on a rail frame whose host has popovers (#16).
@@ -499,7 +497,7 @@ const paint = async () => {
   clear(results);
   listBox = null;
   footerBox = null;
-  stateSelect = null;
+  stateMenu = null;
   closeDetail();
   if (!connected) {
     openCount = 0;
@@ -568,31 +566,30 @@ const paint = async () => {
     filters.projectId =
       projects.find((p) => p.id === settings.defaultProject || p.name === settings.defaultProject)?.id ?? projects[0]!.id;
   }
-  const searchBox = div();
-  const projectBox = div();
-  const stateBox = div();
-  const mineBox = div();
-  listBox = div();
-  footerBox = div();
-  mounted.push(mountSearchField(searchBox, {
-    value: filters.search,
-    placeholder: "Search text or identifier, e.g. PROJ-142",
-    label: "Search work items",
-    onChange: (value) => {
-      filters.search = value;
-      if (searchTimer) clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
-    },
-  }));
-  const projectSelect = mountSelect(projectBox, {
-    label: "Project",
-    value: filters.projectId,
-    options: projects.map((p) => ({ id: p.id, label: p.name })),
-    onChange: (id) => {
+  // Unified filter bar (prototype variant D): the project menu, the state
+  // menu, the Assigned-to-me toggle and the search field share one box, so
+  // the list starts after a single row instead of three labeled controls
+  // plus a checkbox.
+  const activeFilterCount = () => (filters.stateId ? 1 : 0) + (filters.mine ? 1 : 0) + (filters.search ? 1 : 0);
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;gap:2px;align-items:center;margin-bottom:8px;padding:3px 4px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Work item filters");
+  root.append(bar);
+  mounted.push({ dispose: () => bar.remove() });
+  const projectMenuBox = document.createElement("div");
+  projectMenuBox.style.cssText = "flex:0 1 auto;min-width:0;max-width:45%;overflow:hidden;";
+  bar.append(projectMenuBox);
+  const projectMenu = mountMenu(projectMenuBox, {
+    label: `${projectName(filters.projectId)} ▾`,
+    variant: "ghost",
+    size: "sm",
+    items: projects.map((p) => ({ id: p.id, label: p.name })),
+    onSelect: (id) => {
       filters.projectId = id;
       filters.stateId = "";
-      // The kit paints its trigger from props, so the chosen value goes back in.
-      projectSelect.update({ value: id });
+      refreshFilterBar();
       void (async () => {
         await refreshStates(gen, slug, id);
         if (gen !== generation) return;
@@ -600,28 +597,84 @@ const paint = async () => {
       })();
     },
   });
-  mounted.push(projectSelect);
-  stateSelect = mountSelect(stateBox, {
-    label: "State",
-    value: filters.stateId,
-    options: stateOptions(),
-    onChange: (id) => {
+  mounted.push(projectMenu);
+  const stateMenuBox = document.createElement("div");
+  stateMenuBox.style.cssText = "flex:0 1 auto;min-width:0;max-width:40%;overflow:hidden;";
+  bar.append(stateMenuBox);
+  stateMenu = mountMenu(stateMenuBox, {
+    label: stateMenuLabel(),
+    variant: "ghost",
+    size: "sm",
+    items: stateMenuItems(),
+    onSelect: (id) => {
       filters.stateId = id;
-      stateSelect?.update({ value: id });
+      refreshFilterBar();
       void reload(gen, slug, false);
     },
   });
-  mounted.push(stateSelect);
-  mounted.push(mountCheckbox(mineBox, {
-    label: "Assigned to me",
-    checked: filters.mine,
-    onChange: (checked) => {
-      filters.mine = checked;
+  mounted.push(stateMenu);
+  const meBox = document.createElement("div");
+  meBox.style.cssText = "flex:0 0 auto;";
+  bar.append(meBox);
+  const meButton = mountButton(meBox, {
+    label: filters.mine ? "☑ Me" : "☐ Me",
+    variant: "ghost",
+    size: "sm",
+    onClick: () => {
+      filters.mine = !filters.mine;
+      refreshFilterBar();
       void reload(gen, slug, false);
     },
-  }));
+  });
+  mounted.push(meButton);
+  const searchInput = document.createElement("input");
+  searchInput.setAttribute("type", "text");
+  searchInput.setAttribute("aria-label", "Search work items");
+  searchInput.setAttribute("placeholder", "Search or PROJ-142");
+  searchInput.value = filters.search;
+  searchInput.style.cssText = "flex:1 1 60px;min-width:60px;background:none;border:0;outline:none;color:inherit;font:inherit;";
+  searchInput.addEventListener("input", () => {
+    filters.search = searchInput.value;
+    // Labels are repainted only when changed, so typing never steals focus.
+    refreshFilterBar();
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
+  });
+  bar.append(searchInput);
+  mounted.push({ dispose: () => searchInput.remove() });
+  const clearBox = document.createElement("div");
+  clearBox.style.cssText = "flex:0 0 auto;";
+  bar.append(clearBox);
+  const clearFilters = mountButton(clearBox, {
+    label: "Clear",
+    variant: "ghost",
+    size: "xs",
+    onClick: () => {
+      if (activeFilterCount() === 0) return;
+      filters.search = "";
+      filters.stateId = "";
+      filters.mine = false;
+      searchInput.value = "";
+      refreshFilterBar();
+      void reload(gen, slug, false);
+    },
+  });
+  mounted.push(clearFilters);
+  // Every chip shows its own state; the tooltips carry the full names the
+  // chips abbreviate. The Clear chip is only there while filtering.
+  function refreshFilterBar() {
+    projectMenu.update({ label: `${projectName(filters.projectId)} ▾` });
+    projectMenuBox.querySelector("button")?.setAttribute("title", `Project: ${projectName(filters.projectId)}`);
+    stateMenu?.update({ items: stateMenuItems(), label: stateMenuLabel() });
+    meButton.update({ label: filters.mine ? "☑ Me" : "☐ Me" });
+    meBox.querySelector("button")?.setAttribute("title", "Assigned to me");
+    clearBox.style.display = activeFilterCount() > 0 ? "" : "none";
+  }
+  refreshFilterBar();
+  listBox = div();
+  footerBox = div();
   mounted.push(mountText(footerBox, { text: "Select a row to open it." }));
-  // Best effort: a states failure leaves the State control with "All" alone.
+  // Best effort: a states failure leaves the State menu on "All" alone.
   await refreshStates(gen, slug, filters.projectId);
   await reload(gen, slug, false);
 };
@@ -662,10 +715,15 @@ async function loadProjects(gen: number, slug: string) {
     .map((p) => ({ id: p.id as string, name: typeof p.name === "string" && p.name ? p.name : (p.id as string) }));
 }
 
-const stateOptions = () => [
-  { id: "", label: "All" },
-  ...states.map((s) => ({ id: s.id, label: s.name, hint: s.group ?? undefined })),
+const stateMenuItems = () => [
+  { id: "", label: "All states" },
+  ...states.map((s) => ({ id: s.id, label: s.name })),
 ];
+
+const stateMenuLabel = () => {
+  const name = filters.stateId ? states.find((s) => s.id === filters.stateId)?.name ?? filters.stateId : "All";
+  return `State: ${name} ▾`;
+};
 
 // Best-effort states for the State control (issue #10): any failure leaves the
 // filter at "All" and the list usable.
@@ -679,7 +737,7 @@ async function refreshStates(gen: number, slug: string, projectId: string) {
   }
   if (gen !== generation) return;
   if (filters.stateId && !states.some((s) => s.id === filters.stateId)) filters.stateId = "";
-  stateSelect?.update({ options: stateOptions(), value: filters.stateId });
+  stateMenu?.update({ items: stateMenuItems(), label: stateMenuLabel() });
 }
 
 const currentQuery = (nextPage: Page) => {
