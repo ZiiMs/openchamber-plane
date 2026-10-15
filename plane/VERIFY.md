@@ -66,7 +66,8 @@ A human with a Plane Cloud tenant walks this list once:
       surfaces the exact work item even when `?search=` alone would miss it.
 - [ ] Assigned to me narrows the list correctly. (The workflow filter is the
       State control now — see "State pill and State filter" below.)
-- [ ] Scrolling past 25 rows offers Load more and appends the next page.
+- [ ] Scrolling near the end of the list appends the next page automatically
+      (a short list pages through on its own); a failed page keeps Retry.
 - [ ] Selecting a row highlights it and enables the row actions below;
       Open in Plane opens `{web-base}/{slug}/browse/{identifier}/` in
       the host browser.
@@ -189,7 +190,7 @@ once:
       below; on the full page it centres at a readable width.
 - [ ] A work item archived after the list loaded shows "Could not load this
       work item" with Open in Plane still offered.
-- [ ] Load more and Retry still work from the panel footer.
+- [ ] Retry still works from the panel footer.
 
 ## Popped-out detail (issue #16)
 

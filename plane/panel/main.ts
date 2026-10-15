@@ -485,6 +485,7 @@ let popoverSeq = 0;
 let openPopoverId: string | null = null;
 let rows: Row[] = [];
 let page: Page = null;
+let loadingMore = false;
 let selectedId: string | null = null;
 let collapsedSections = new Set<string>();
 let openCount = 0;
@@ -761,16 +762,19 @@ async function reload(gen: number, slug: string, append: boolean) {
   if (!append) {
     rows = [];
     page = null;
+    loadingMore = false;
     selectedId = null;
     openCount = 0;
     serverTotal = null;
     actionNote = "";
   }
   if (filters.mine && !meId) {
-    renderResults(gen, `Could not determine your account id, showing unfiltered.`, true);
+    renderResults(gen, `Could not determine your account id, showing unfiltered.`, true, append);
     return;
   }
-  clear(results);
+  // Appends keep the loaded rows on screen with the spinner at the end;
+  // a fresh load clears first. Either way the next render disposes this.
+  if (!append) clear(results);
   const spinner = mountSpinner(listBox, { label: append ? "Loading more work items" : "Loading work items" });
   results.push(spinner);
   try {
@@ -779,11 +783,11 @@ async function reload(gen: number, slug: string, append: boolean) {
     });
     statusNote = "";
     if (result.status === 429) {
-      renderResults(gen, "Plane is rate-limiting requests. Wait a moment, then retry.", true);
+      renderResults(gen, "Plane is rate-limiting requests. Wait a moment, then retry.", true, append);
       return;
     }
     if (result.status === 404) {
-      renderResults(gen, `Project not found in workspace “${slug}”.`, true);
+      renderResults(gen, `Project not found in workspace “${slug}”.`, true, append);
       return;
     }
     if (result.status !== 200) throw new Error(`Plane answered ${result.status} for the work-item list.`);
@@ -813,16 +817,49 @@ async function reload(gen: number, slug: string, append: boolean) {
         }
       }
     }
-    renderResults(gen, "", false);
+    renderResults(gen, "", false, append);
   } catch (error) {
     if (gen !== generation) return;
     const text = describeError(error);
-    renderResults(gen, text === "Error: stale" ? "" : text, text !== "Error: stale");
+    renderResults(gen, text === "Error: stale" ? "" : text, text !== "Error: stale", append);
   }
 }
 
-function renderResults(gen: number, error: string, showRetry: boolean) {
+function renderResults(gen: number, error: string, showRetry: boolean, keepScroll = false) {
   if (!listBox || !footerBox || gen !== generation) return;
+  // Appends rebuild the list in place, and new rows can land in a section
+  // above the viewport (grouped by state), so a raw scrollTop restore still
+  // jumps: anchor on the first visible row instead, like non-virtualized
+  // infinite lists do, and re-seat that same row at its offset afterwards.
+  const scroller = document.scrollingElement;
+  const prevTop = keepScroll ? scroller?.scrollTop ?? 0 : 0;
+  const prevMax = scroller ? scroller.scrollHeight - scroller.clientHeight : 0;
+  const nearBottom = prevTop >= prevMax - 200;
+  let anchor: { id: string; top: number } | null = null;
+  if (keepScroll && listBox) {
+    const rowEls = Array.from(listBox.querySelectorAll('[role="option"]'));
+    for (const el of rowEls) {
+      const top = (el as HTMLElement).getBoundingClientRect().top;
+      if (top >= 0) {
+        anchor = { id: el.querySelector(".oc-sdk-row-lead")?.textContent ?? "", top };
+        break;
+      }
+    }
+  }
+  const restoreScroll = () => {
+    if (!keepScroll || !scroller) return;
+    const rowEls = Array.from(listBox?.querySelectorAll('[role="option"]') ?? []);
+    const next = anchor?.id
+      ? rowEls.find((el) => el.querySelector(".oc-sdk-row-lead")?.textContent === anchor?.id)
+      : undefined;
+    if (next) {
+      scroller.scrollTop = prevTop + ((next as HTMLElement).getBoundingClientRect().top - (anchor as { top: number }).top);
+    } else if (nearBottom) {
+      scroller.scrollTop = scroller.scrollHeight;
+    } else {
+      scroller.scrollTop = prevTop;
+    }
+  };
   clear(results);
   refreshBadge();
   if (statusNote) results.push(mountBanner(listBox, { tone: "warning", title: statusNote }));
@@ -832,12 +869,13 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     if (showRetry) {
       results.push(footerButton("Retry", () => void reload(gen, settings.slug, false)));
     }
+    restoreScroll();
     return;
   }
   const onSelect = (id: string) => {
     selectedId = id;
     actionNote = "";
-    renderResults(gen, "", false);
+    renderResults(gen, "", false, true);
     const picked = selectedRow();
     if (picked) void openDetail(gen, picked);
   };
@@ -866,7 +904,7 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       heading.addEventListener("click", () => {
         if (collapsedSections.has(section.state)) collapsedSections.delete(section.state);
         else collapsedSections.add(section.state);
-        renderResults(gen, "", false);
+        renderResults(gen, "", false, true);
         // The toggle re-render replaces the focused button; refocus its
         // replacement so keyboard collapsing/expanding is uninterrupted.
         listBox?.querySelector<HTMLElement>(`button.plane-section[data-state="${CSS.escape(section.state)}"]`)?.focus();
@@ -876,9 +914,42 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       if (!collapsed) results.push(mountList(listBox, listProps(section.rows)));
     }
   }
+  // Infinite scroll: a sentinel after the last row loads the next page when it
+  // nears the viewport, prefetching before the bottom is reached. A short
+  // list loads every page on its own; errors keep the Retry button instead.
+  // Both the observer and a scroll check feed the same guard: the observer
+  // covers visibility without scrolling, the scroll check covers throttled
+  // frames where observer delivery lags.
   if (page !== null) {
-    results.push(footerButton("Load more", () => void reload(gen, settings.slug, true)));
+    const sentinel = document.createElement("div");
+    sentinel.className = "plane-more";
+    sentinel.style.cssText = "height:1px;";
+    listBox.append(sentinel);
+    const maybeMore = () => {
+      if (gen !== generation) return;
+      if (page === null || loadingMore) return;
+      if (sentinel.getBoundingClientRect().top > window.innerHeight + 400) return;
+      loadingMore = true;
+      const done = () => { loadingMore = false; };
+      void reload(gen, settings.slug, true).then(done, done);
+    };
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      maybeMore();
+    }, { rootMargin: "400px" });
+    observer.observe(sentinel);
+    // Capture phase: scroll events do not bubble, and this also catches any
+    // inner scroller, not just the viewport.
+    document.addEventListener("scroll", maybeMore, true);
+    results.push({
+      dispose: () => {
+        observer.disconnect();
+        document.removeEventListener("scroll", maybeMore, true);
+        sentinel.remove();
+      },
+    });
   }
+  restoreScroll();
 }
 
 function renderFatal(message: string) {
@@ -905,6 +976,13 @@ host.onReady((ctx) => {
     slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
     defaultProject: (ctx.settings?.["default-project"] ?? "").trim(),
   };
+  // The host re-pushes an unchanged ready (it answers both hello and iframe
+  // load): replaying the whole storage-read + repaint flow for an echo would
+  // close the open detail modal (its paint calls closeDetail), so identical
+  // pushes are skipped like settings below.
+  const readyKey = JSON.stringify({ settings: fromSettings, connected });
+  if (readyKey === previousReadyKey) return;
+  previousReadyKey = readyKey;
   // One paint after the storage read so the first render already uses the
   // remembered mapping; returning users are not asked twice. The popped-out
   // detail frame reads the same mapping and paints only its card (issue #16).
@@ -915,16 +993,26 @@ host.onReady((ctx) => {
       return;
     }
     void persistMapping(settings);
+    previousSettings = JSON.stringify(settings);
     void paint();
   })();
 });
+let previousReadyKey: string | undefined;
+// The host echoes the settings on every hello; repainting on an unchanged
+// echo would close the open detail modal (its paint calls closeDetail), so
+// identical pushes are skipped like connections.
+let previousSettings: string | undefined;
 host.onSettings((next) => {
   // An explicit settings change is the truth (blanks clear the cache too),
   // so shape it directly, persist both keys, and re-target browse + resolve.
-  settings = {
+  const shaped = {
     slug: (next?.["workspace-slug"] ?? "").trim(),
     defaultProject: (next?.["default-project"] ?? "").trim(),
   };
+  const key = JSON.stringify(shaped);
+  if (key === previousSettings) return;
+  previousSettings = key;
+  settings = shaped;
   void persistMapping(settings);
   void paint();
 });
