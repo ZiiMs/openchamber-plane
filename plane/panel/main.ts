@@ -146,20 +146,17 @@ async function persistMapping(mapping: { slug: string; defaultProject: string })
 
 const selectedRow = () => rows.find((r) => r.id === selectedId) ?? null;
 
-const selectedChip = () => {
-  const row = selectedRow();
-  if (!row) return null;
-  return {
-    row,
-    chip: buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title }),
-  };
-};
-
 const showNotice = (gen: number, tone: "info" | "success" | "error", note: string) => {
   if (gen !== generation) return;
   actionTone = tone;
   actionNote = note;
   renderResults(gen, "", false);
+};
+
+// What an action reports goes into the panel's list.
+const notify = (gen: number, tone: "info" | "success" | "error", note: string) => {
+  if (listBox) showNotice(gen, tone, note);
+  else void host.toast({ kind: tone, message: note }).catch(() => {});
 };
 
 const describeError = (error: unknown) =>
@@ -168,50 +165,52 @@ const describeError = (error: unknown) =>
 const footerButton = (label: string, onClick: () => void, disabled = false) =>
   mountButton(footerBox, { label, variant: "outline", size: "sm", disabled, onClick });
 
-async function attachSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+// The detail modal's actions take the row they were drawn for.
+const chipFor = (row: Row) =>
+  buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title });
+
+async function attachRow(gen: number, row: Row) {
   try {
-    await host.attach(found.chip);
+    await host.attach(chipFor(row));
     if (gen !== generation) return;
     await host.close(); // dismisses the attach dialog; no-op on the rail
-    showNotice(gen, "success", `Attached ${found.row.identifier} to the chat box.`);
+    notify(gen, "success", `Attached ${row.identifier} to the chat box.`);
   } catch (error) {
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
-async function startSessionFromSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+async function startSessionFor(gen: number, row: Row) {
+  const chip = chipFor(row);
   const text = buildSessionText({
-    identifier: found.row.identifier,
-    title: found.row.title,
-    url: found.chip.url,
-    state: found.row.state,
+    identifier: row.identifier,
+    title: row.title,
+    url: chip.url,
+    state: row.state,
   });
   try {
-    const result = await host.startSession({ ...found.chip, text });
+    const result = await host.startSession({ ...chip, text });
     if (gen !== generation) return;
-    if (result.sessionId) showNotice(gen, "success", `Started a session for ${found.row.identifier}.`);
-    else showNotice(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
+    if (result.sessionId) {
+      void host.close().catch(() => {});
+      notify(gen, "success", `Started a session for ${row.identifier}.`);
+    } else notify(gen, "error", `Session not created (${result.failure ?? "unknown reason"}); nothing else was made.`);
   } catch (error) {
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
-async function linkSelected(gen: number) {
-  const found = selectedChip();
-  if (!found) return;
+async function linkRow(gen: number, row: Row) {
   try {
-    await host.sessionLink(found.chip);
-    showNotice(gen, "success", `Linked ${found.row.identifier} to the open session.`);
+    await host.sessionLink(chipFor(row));
+    void host.close().catch(() => {});
+    notify(gen, "success", `Linked ${row.identifier} to the open session.`);
   } catch (error) {
     if (error instanceof HostRequestError && error.code === "NO_SESSION") {
-      showNotice(gen, "info", "No open session — open or start a session first, then link.");
+      notify(gen, "info", "No open session — open or start a session first, then link.");
       return;
     }
-    showNotice(gen, "error", describeError(error));
+    notify(gen, "error", describeError(error));
   }
 }
 
@@ -284,34 +283,16 @@ const detailRow = (label: string, value: string | null, pill?: { label: string; 
   return row;
 };
 
-async function openDetail(gen: number, row: Row) {
-  closeDetail();
-  const overlay = document.createElement("div");
-  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
-  const card = document.createElement("div");
-  card.setAttribute("role", "dialog");
-  card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
-  card.tabIndex = -1;
-  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
-  overlay.append(card);
-  document.body.append(overlay);
-  modal = { dispose: () => overlay.remove() };
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) closeDetail();
-  });
-  overlay.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDetail();
-  });
-  card.focus();
-
+// Detail modal (issue #12). The kit has no modal primitive, so it is composed
+// from the host theme tokens; the row click that selects the row opens it.
+async function fillDetailCard(gen: number, row: Row, card: HTMLElement, close: () => void) {
   const head = document.createElement("div");
   head.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
   const heading = document.createElement("div");
   heading.style.cssText = "flex:1 1 auto;min-width:0;font-weight:600;";
   heading.textContent = row.title;
   head.append(heading);
-  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: () => closeDetail() });
+  mountButton(head, { label: "Close", variant: "ghost", size: "sm", onClick: close });
   card.append(head);
   const key = document.createElement("div");
   key.style.cssText = "font-family:var(--oc-mono,monospace);font-size:0.75rem;color:var(--oc-muted);";
@@ -331,7 +312,7 @@ async function openDetail(gen: number, row: Row) {
   }
   spinner.dispose();
   if (gen !== generation) {
-    closeDetail();
+    close();
     return;
   }
   if (failure) {
@@ -372,9 +353,34 @@ async function openDetail(gen: number, row: Row) {
   footer.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
   card.append(footer);
   mountButton(footer, { label: "Open in Plane", variant: "outline", size: "sm", onClick: () => void host.openUrl(row.url) });
-  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachSelected(gen) });
-  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFromSelected(gen) });
-  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkSelected(gen) });
+  mountButton(footer, { label: "Attach chip", variant: "outline", size: "sm", onClick: () => void attachRow(gen, row) });
+  mountButton(footer, { label: "Start session", variant: "outline", size: "sm", onClick: () => void startSessionFor(gen, row) });
+  mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkRow(gen, row) });
+}
+
+// The kit has no modal primitive, so the detail modal is composed from the
+// host theme tokens; the row click that selects the row opens it.
+function openDetail(gen: number, row: Row) {
+  closeDetail();
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
+  const card = document.createElement("div");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", `${row.identifier} ${row.title}`);
+  card.tabIndex = -1;
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;width:min(100%,640px);max-height:100%;overflow:auto;padding:16px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);box-shadow:0 16px 40px rgba(0,0,0,.35);";
+  overlay.append(card);
+  document.body.append(overlay);
+  modal = { dispose: () => overlay.remove() };
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeDetail();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDetail();
+  });
+  card.focus();
+  void fillDetailCard(gen, row, card, closeDetail);
 }
 
 let generation = 0;
@@ -389,6 +395,7 @@ let stateSelect: ReturnType<typeof mountSelect> | null = null;
 let modal: { dispose: () => void } | null = null;
 let rows: Row[] = [];
 let page: Page = null;
+let loadingMore = false;
 let selectedId: string | null = null;
 let collapsedSections = new Set<string>();
 let openCount = 0;
@@ -609,16 +616,19 @@ async function reload(gen: number, slug: string, append: boolean) {
   if (!append) {
     rows = [];
     page = null;
+    loadingMore = false;
     selectedId = null;
     openCount = 0;
     serverTotal = null;
     actionNote = "";
   }
   if (filters.mine && !meId) {
-    renderResults(gen, `Could not determine your account id, showing unfiltered.`, true);
+    renderResults(gen, `Could not determine your account id, showing unfiltered.`, true, append);
     return;
   }
-  clear(results);
+  // Appends keep the loaded rows on screen with the spinner at the end;
+  // a fresh load clears first. Either way the next render disposes this.
+  if (!append) clear(results);
   const spinner = mountSpinner(listBox, { label: append ? "Loading more work items" : "Loading work items" });
   results.push(spinner);
   try {
@@ -627,11 +637,11 @@ async function reload(gen: number, slug: string, append: boolean) {
     });
     statusNote = "";
     if (result.status === 429) {
-      renderResults(gen, "Plane is rate-limiting requests. Wait a moment, then retry.", true);
+      renderResults(gen, "Plane is rate-limiting requests. Wait a moment, then retry.", true, append);
       return;
     }
     if (result.status === 404) {
-      renderResults(gen, `Project not found in workspace “${slug}”.`, true);
+      renderResults(gen, `Project not found in workspace “${slug}”.`, true, append);
       return;
     }
     if (result.status !== 200) throw new Error(`Plane answered ${result.status} for the work-item list.`);
@@ -661,16 +671,49 @@ async function reload(gen: number, slug: string, append: boolean) {
         }
       }
     }
-    renderResults(gen, "", false);
+    renderResults(gen, "", false, append);
   } catch (error) {
     if (gen !== generation) return;
     const text = describeError(error);
-    renderResults(gen, text === "Error: stale" ? "" : text, text !== "Error: stale");
+    renderResults(gen, text === "Error: stale" ? "" : text, text !== "Error: stale", append);
   }
 }
 
-function renderResults(gen: number, error: string, showRetry: boolean) {
+function renderResults(gen: number, error: string, showRetry: boolean, keepScroll = false) {
   if (!listBox || !footerBox || gen !== generation) return;
+  // Appends rebuild the list in place, and new rows can land in a section
+  // above the viewport (grouped by state), so a raw scrollTop restore still
+  // jumps: anchor on the first visible row instead, like non-virtualized
+  // infinite lists do, and re-seat that same row at its offset afterwards.
+  const scroller = document.scrollingElement;
+  const prevTop = keepScroll ? scroller?.scrollTop ?? 0 : 0;
+  const prevMax = scroller ? scroller.scrollHeight - scroller.clientHeight : 0;
+  const nearBottom = prevTop >= prevMax - 200;
+  let anchor: { id: string; top: number } | null = null;
+  if (keepScroll && listBox) {
+    const rowEls = Array.from(listBox.querySelectorAll('[role="option"]'));
+    for (const el of rowEls) {
+      const top = (el as HTMLElement).getBoundingClientRect().top;
+      if (top >= 0) {
+        anchor = { id: el.querySelector(".oc-sdk-row-lead")?.textContent ?? "", top };
+        break;
+      }
+    }
+  }
+  const restoreScroll = () => {
+    if (!keepScroll || !scroller) return;
+    const rowEls = Array.from(listBox?.querySelectorAll('[role="option"]') ?? []);
+    const next = anchor?.id
+      ? rowEls.find((el) => el.querySelector(".oc-sdk-row-lead")?.textContent === anchor?.id)
+      : undefined;
+    if (next) {
+      scroller.scrollTop = prevTop + ((next as HTMLElement).getBoundingClientRect().top - (anchor as { top: number }).top);
+    } else if (nearBottom) {
+      scroller.scrollTop = scroller.scrollHeight;
+    } else {
+      scroller.scrollTop = prevTop;
+    }
+  };
   clear(results);
   refreshBadge();
   if (statusNote) results.push(mountBanner(listBox, { tone: "warning", title: statusNote }));
@@ -680,12 +723,13 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
     if (showRetry) {
       results.push(footerButton("Retry", () => void reload(gen, settings.slug, false)));
     }
+    restoreScroll();
     return;
   }
   const onSelect = (id: string) => {
     selectedId = id;
     actionNote = "";
-    renderResults(gen, "", false);
+    renderResults(gen, "", false, true);
     const picked = selectedRow();
     if (picked) void openDetail(gen, picked);
   };
@@ -714,7 +758,7 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       heading.addEventListener("click", () => {
         if (collapsedSections.has(section.state)) collapsedSections.delete(section.state);
         else collapsedSections.add(section.state);
-        renderResults(gen, "", false);
+        renderResults(gen, "", false, true);
         // The toggle re-render replaces the focused button; refocus its
         // replacement so keyboard collapsing/expanding is uninterrupted.
         listBox?.querySelector<HTMLElement>(`button.plane-section[data-state="${CSS.escape(section.state)}"]`)?.focus();
@@ -724,9 +768,42 @@ function renderResults(gen: number, error: string, showRetry: boolean) {
       if (!collapsed) results.push(mountList(listBox, listProps(section.rows)));
     }
   }
+  // Infinite scroll: a sentinel after the last row loads the next page when it
+  // nears the viewport, prefetching before the bottom is reached. A short
+  // list loads every page on its own; errors keep the Retry button instead.
+  // Both the observer and a scroll check feed the same guard: the observer
+  // covers visibility without scrolling, the scroll check covers throttled
+  // frames where observer delivery lags.
   if (page !== null) {
-    results.push(footerButton("Load more", () => void reload(gen, settings.slug, true)));
+    const sentinel = document.createElement("div");
+    sentinel.className = "plane-more";
+    sentinel.style.cssText = "height:1px;";
+    listBox.append(sentinel);
+    const maybeMore = () => {
+      if (gen !== generation) return;
+      if (page === null || loadingMore) return;
+      if (sentinel.getBoundingClientRect().top > window.innerHeight + 400) return;
+      loadingMore = true;
+      const done = () => { loadingMore = false; };
+      void reload(gen, settings.slug, true).then(done, done);
+    };
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      maybeMore();
+    }, { rootMargin: "400px" });
+    observer.observe(sentinel);
+    // Capture phase: scroll events do not bubble, and this also catches any
+    // inner scroller, not just the viewport.
+    document.addEventListener("scroll", maybeMore, true);
+    results.push({
+      dispose: () => {
+        observer.disconnect();
+        document.removeEventListener("scroll", maybeMore, true);
+        sentinel.remove();
+      },
+    });
   }
+  restoreScroll();
 }
 
 function renderFatal(message: string) {
@@ -751,21 +828,38 @@ host.onReady((ctx) => {
     slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
     defaultProject: (ctx.settings?.["default-project"] ?? "").trim(),
   };
+  // The host re-pushes an unchanged ready (it answers both hello and iframe
+  // load): replaying the whole storage-read + repaint flow for an echo would
+  // close the open detail modal (its paint calls closeDetail), so identical
+  // pushes are skipped like settings below.
+  const readyKey = JSON.stringify({ settings: fromSettings, connected, account });
+  if (readyKey === previousReadyKey) return;
+  previousReadyKey = readyKey;
   // One paint after the storage read so the first render already uses the
   // remembered mapping; returning users are not asked twice.
   void (async () => {
     settings = mergeMapping(fromSettings, await readStoredMapping());
     void persistMapping(settings);
+    previousSettings = JSON.stringify(settings);
     void paint();
   })();
 });
+let previousReadyKey: string | undefined;
+// The host echoes the settings on every hello; repainting on an unchanged
+// echo would close the open detail modal (its paint calls closeDetail), so
+// identical pushes are skipped like connections.
+let previousSettings: string | undefined;
 host.onSettings((next) => {
   // An explicit settings change is the truth (blanks clear the cache too),
   // so shape it directly, persist both keys, and re-target browse + resolve.
-  settings = {
+  const shaped = {
     slug: (next?.["workspace-slug"] ?? "").trim(),
     defaultProject: (next?.["default-project"] ?? "").trim(),
   };
+  const key = JSON.stringify(shaped);
+  if (key === previousSettings) return;
+  previousSettings = key;
+  settings = shaped;
   void persistMapping(settings);
   void paint();
 });

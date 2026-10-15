@@ -70,7 +70,8 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "Found workspaces", // discovered slugs offered in the no-slug empty state
     "/browse/", // rows link toward the canonical browse URL
     "Assigned to me", // assigned-to-me control
-    "Load more", // paged lists
+    "plane-more", // the infinite-scroll sentinel that loads the next page
+    "IntersectionObserver", // the sentinel is viewport-observed, not clicked
   ]) if (!src.includes(needle)) fail(`panel/main.js missing browse wiring: ${needle}`); else ok(`browse wiring present: ${needle}`);
   for (const needle of [
     "providerId", // chip carries the panel provider id
