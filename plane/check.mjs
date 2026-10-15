@@ -62,7 +62,6 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "state_id__in", // work-item list carries the state filter (issue #10)
     "/states/", // states come from the project's own workflow (issue #10)
     "order_by", // states are asked for in workflow order
-    "Plane user", // an empty account name falls back instead of "Connected as ."
     "plane-section", // the grouped list renders per-state section headings
     "assignee_id", // work-item list carries the assigned-to-me filter
     "/work-items/", // work-item list / by-identifier paths
@@ -91,6 +90,12 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "Loading work item", // the modal's loading label
     "plane-rich", // the description renders through the allow-list (issue #13)
   ]) if (!src.includes(needle)) fail(`panel/main.js missing detail wiring: ${needle}`); else ok(`detail wiring present: ${needle}`);
+  for (const needle of [
+    "openPopover", // the rail's detail pops out of the panel into a host frame (issue #16)
+    "plane-detail-", // a fresh popover id per opening
+    "popovers", // feature-detected, so an older host keeps the in-frame overlay
+    "setHeight", // the popped-out card is as tall as its content
+  ]) if (!src.includes(needle)) fail(`panel/main.js missing popover wiring: ${needle}`); else ok(`popover wiring present: ${needle}`);
   for (const needle of [
     "onResolve", // slash command answers instead of stubbing null
     "args", // resolve reads the command args for the work item identifier

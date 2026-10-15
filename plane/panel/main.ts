@@ -1,14 +1,13 @@
 import { connectHost, HostRequestError } from "@openchamber/sdk";
+import type { GuestHostSurface, GuestPopoverContext, HostReadyContext } from "@openchamber/sdk";
 import {
   applyHostReady,
   mountBadge,
   mountBanner,
   mountButton,
-  mountCheckbox,
   mountEmpty,
   mountList,
-  mountSearchField,
-  mountSelect,
+  mountMenu,
   mountSpinner,
   mountText,
 } from "@openchamber/sdk/ui";
@@ -62,6 +61,9 @@ type Detail = {
   description: string;
 };
 type Page = { kind: "offset" | "cursor"; next: number | string } | null;
+// What the detail card needs from a row. The panel's Row satisfies it, and the
+// popped-out detail frame rebuilds it from ready.popover.data (issue #16).
+type CardRow = { identifier: string; title: string; state: string; url: string };
 
 const REQUEST_TIMEOUT_MS = 20000;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -153,7 +155,8 @@ const showNotice = (gen: number, tone: "info" | "success" | "error", note: strin
   renderResults(gen, "", false);
 };
 
-// What an action reports goes into the panel's list.
+// What an action reports goes into the panel's list; the popped-out detail has
+// no list, so it toasts instead (issue #16).
 const notify = (gen: number, tone: "info" | "success" | "error", note: string) => {
   if (listBox) showNotice(gen, tone, note);
   else void host.toast({ kind: tone, message: note }).catch(() => {});
@@ -165,22 +168,23 @@ const describeError = (error: unknown) =>
 const footerButton = (label: string, onClick: () => void, disabled = false) =>
   mountButton(footerBox, { label, variant: "outline", size: "sm", disabled, onClick });
 
-// The detail modal's actions take the row they were drawn for.
-const chipFor = (row: Row) =>
+// The detail card's actions take the row they were drawn for, so the card works
+// the same in the panel and in the popped-out frame (issue #16).
+const chipFor = (row: CardRow) =>
   buildAttachItem({ slug: settings.slug, identifier: row.identifier, title: row.title });
 
-async function attachRow(gen: number, row: Row) {
+async function attachRow(gen: number, row: CardRow) {
   try {
     await host.attach(chipFor(row));
     if (gen !== generation) return;
-    await host.close(); // dismisses the attach dialog; no-op on the rail
+    await host.close(); // dismisses the attach dialog; closes the calling popover
     notify(gen, "success", `Attached ${row.identifier} to the chat box.`);
   } catch (error) {
     notify(gen, "error", describeError(error));
   }
 }
 
-async function startSessionFor(gen: number, row: Row) {
+async function startSessionFor(gen: number, row: CardRow) {
   const chip = chipFor(row);
   const text = buildSessionText({
     identifier: row.identifier,
@@ -200,7 +204,7 @@ async function startSessionFor(gen: number, row: Row) {
   }
 }
 
-async function linkRow(gen: number, row: Row) {
+async function linkRow(gen: number, row: CardRow) {
   try {
     await host.sessionLink(chipFor(row));
     void host.close().catch(() => {});
@@ -216,7 +220,12 @@ async function linkRow(gen: number, row: Row) {
 
 // Closing hands focus back to the selected row: the re-render that opened the
 // modal rebuilt it, so the live row is found in the list rather than remembered.
+// A popped-out detail is host chrome, so it only needs telling (issue #16).
 const closeDetail = () => {
+  if (openPopoverId) {
+    void host.closePopover(openPopoverId).catch(() => {});
+    openPopoverId = null;
+  }
   if (!modal) return;
   modal.dispose();
   modal = null;
@@ -283,9 +292,10 @@ const detailRow = (label: string, value: string | null, pill?: { label: string; 
   return row;
 };
 
-// Detail modal (issue #12). The kit has no modal primitive, so it is composed
-// from the host theme tokens; the row click that selects the row opens it.
-async function fillDetailCard(gen: number, row: Row, card: HTMLElement, close: () => void) {
+// Detail card (issue #12), in-frame fallback (issue #16) and popped-out frame
+// (issue #16) all fill this one card, so the fields, the formatted description
+// and the footer actions cannot drift apart.
+async function fillDetailCard(gen: number, row: CardRow, card: HTMLElement, close: () => void, projectName: string | null = null) {
   const head = document.createElement("div");
   head.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
   const heading = document.createElement("div");
@@ -333,7 +343,8 @@ async function fillDetailCard(gen: number, row: Row, card: HTMLElement, close: (
       detailRow("Target", detail.targetDate),
       detailRow("Created", detail.createdAt),
       detailRow("Updated", detail.updatedAt),
-      detailRow("Project", projects.find((p) => p.id === detail.projectId)?.name ?? null),
+      // The popped-out frame has no project list, so the panel hands the name in.
+      detailRow("Project", projectName ?? projects.find((p) => p.id === detail!.projectId)?.name ?? null),
       detailRow("Labels", detail.labels.join(", ") || null),
     ]) {
       if (node) body.append(node);
@@ -358,10 +369,9 @@ async function fillDetailCard(gen: number, row: Row, card: HTMLElement, close: (
   mountButton(footer, { label: "Link to open session", variant: "outline", size: "sm", onClick: () => void linkRow(gen, row) });
 }
 
-// The kit has no modal primitive, so the detail modal is composed from the
+// The kit has no modal primitive, so the in-frame detail is composed from the
 // host theme tokens; the row click that selects the row opens it.
-function openDetail(gen: number, row: Row) {
-  closeDetail();
+function inlineDetail(gen: number, row: CardRow) {
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.45);";
   const card = document.createElement("div");
@@ -383,16 +393,96 @@ function openDetail(gen: number, row: Row) {
   void fillDetailCard(gen, row, card, closeDetail);
 }
 
+// The host caps an extension popover at 640x480 and shrinks it to fit the window.
+const POPOVER_WIDTH = 640;
+const POPOVER_HEIGHT = 480;
+
+// The rail is a few hundred pixels wide, so a row's detail pops out of it: the
+// host mounts this same entry again in a floating frame over the window,
+// anchored to the row, and hands it the work item through ready.popover (#16).
+async function openPopoverDetail(row: CardRow) {
+  const anchor = listBox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+  if (!anchor) return false;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const id = `plane-detail-${++popoverSeq}`;
+  try {
+    await host.openPopover({
+      id,
+      anchor: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      width: POPOVER_WIDTH,
+      height: POPOVER_HEIGHT,
+      side: "left",
+      focus: true,
+      data: {
+        identifier: row.identifier,
+        title: row.title,
+        state: row.state,
+        projectName: projects.find((p) => p.id === filters.projectId)?.name ?? null,
+      },
+    });
+  } catch {
+    // An older host, a host dialog in the way, or an anchor the host will not
+    // take: the in-frame overlay still shows the detail.
+    return false;
+  }
+  openPopoverId = id;
+  return true;
+}
+
+async function openDetail(gen: number, row: Row) {
+  closeDetail();
+  if (surface === "panel" && features?.popovers && (await openPopoverDetail(row))) return;
+  inlineDetail(gen, row);
+}
+
+// The popped-out detail's own frame (issue #16): the host loads this entry
+// again with ready.surface "popover" and the work item in ready.popover.data,
+// and paints the card's border, radius, shadow and background itself.
+async function paintDetailPopover() {
+  const data = popover?.data as { identifier?: unknown; title?: unknown; state?: unknown; projectName?: unknown } | null | undefined;
+  const identifier = typeof data?.identifier === "string" ? data.identifier : "";
+  if (!identifier || !settings.slug) {
+    void host.close().catch(() => {});
+    return;
+  }
+  const row: CardRow = {
+    identifier,
+    title: typeof data?.title === "string" && data.title ? data.title : identifier,
+    state: typeof data?.state === "string" ? data.state : "",
+    url: browseUrl(settings.slug, identifier),
+  };
+  const card = document.createElement("div");
+  card.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:14px;box-sizing:border-box;";
+  // The popover frame reuses panel.entry, whose #root is height:100% with
+  // padding for the panel surface. Appending after it would start the card
+  // one viewport down and setHeight would measure from the wrong top, so
+  // the card mounts inside #root with the root collapsed around it.
+  root.style.height = "auto";
+  root.style.padding = "0";
+  root.append(card);
+  await fillDetailCard(generation, row, card, () => void host.close().catch(() => {}), typeof data?.projectName === "string" ? data.projectName : null);
+  // The host adds the card's border to this and clamps it to POPOVER_HEIGHT, so
+  // a short work item does not leave a mostly empty card.
+  void host.setHeight(Math.ceil(card.getBoundingClientRect().height)).catch(() => {});
+}
+
 let generation = 0;
 let settings = { slug: "", defaultProject: "" };
 let connected = false;
-let account: string | null = null;
 let meId: string | null = null;
 let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
 let states: State[] = [];
-let stateSelect: ReturnType<typeof mountSelect> | null = null;
+let stateMenu: ReturnType<typeof mountMenu> | null = null;
 let modal: { dispose: () => void } | null = null;
+// Where the host mounted this frame, and what it advertises: the detail card
+// pops out of the panel only on a rail frame whose host has popovers (#16).
+let surface: GuestHostSurface = "panel";
+let popover: GuestPopoverContext | null = null;
+let features: HostReadyContext["features"];
+let popoverSeq = 0;
+let openPopoverId: string | null = null;
 let rows: Row[] = [];
 let page: Page = null;
 let loadingMore = false;
@@ -407,12 +497,13 @@ let statusNote = "";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const paint = async () => {
+  if (surface === "popover") return; // the popped-out detail paints itself (#16)
   const gen = ++generation;
   clear(mounted);
   clear(results);
   listBox = null;
   footerBox = null;
-  stateSelect = null;
+  stateMenu = null;
   closeDetail();
   if (!connected) {
     openCount = 0;
@@ -450,10 +541,6 @@ const paint = async () => {
     return;
   }
   const slug = settings.slug;
-  // The host sends an empty account string before the name is known; `??`
-  // alone would render "Connected as ." (issue #10).
-  const who = typeof account === "string" && account.trim() ? account.trim() : "Plane user";
-  mounted.push(mountText(root, { text: `Connected as ${who}.` }));
   const spinner = mountSpinner(root, { label: "Loading Plane projects" });
   mounted.push(spinner);
   try {
@@ -481,31 +568,30 @@ const paint = async () => {
     filters.projectId =
       projects.find((p) => p.id === settings.defaultProject || p.name === settings.defaultProject)?.id ?? projects[0]!.id;
   }
-  const searchBox = div();
-  const projectBox = div();
-  const stateBox = div();
-  const mineBox = div();
-  listBox = div();
-  footerBox = div();
-  mounted.push(mountSearchField(searchBox, {
-    value: filters.search,
-    placeholder: "Search text or identifier, e.g. PROJ-142",
-    label: "Search work items",
-    onChange: (value) => {
-      filters.search = value;
-      if (searchTimer) clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
-    },
-  }));
-  const projectSelect = mountSelect(projectBox, {
-    label: "Project",
-    value: filters.projectId,
-    options: projects.map((p) => ({ id: p.id, label: p.name })),
-    onChange: (id) => {
+  // Unified filter bar (prototype variant D): the project menu, the state
+  // menu, the Assigned-to-me toggle and the search field share one box, so
+  // the list starts after a single row instead of three labeled controls
+  // plus a checkbox.
+  const activeFilterCount = () => (filters.stateId ? 1 : 0) + (filters.mine ? 1 : 0) + (filters.search ? 1 : 0);
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;gap:2px;align-items:center;margin-bottom:8px;padding:3px 4px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated);color:var(--oc-fg);";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Work item filters");
+  root.append(bar);
+  mounted.push({ dispose: () => bar.remove() });
+  const projectMenuBox = document.createElement("div");
+  projectMenuBox.style.cssText = "flex:0 1 auto;min-width:0;max-width:45%;overflow:hidden;";
+  bar.append(projectMenuBox);
+  const projectMenu = mountMenu(projectMenuBox, {
+    label: `${projectName(filters.projectId)} ▾`,
+    variant: "ghost",
+    size: "sm",
+    items: projects.map((p) => ({ id: p.id, label: p.name })),
+    onSelect: (id) => {
       filters.projectId = id;
       filters.stateId = "";
-      // The kit paints its trigger from props, so the chosen value goes back in.
-      projectSelect.update({ value: id });
+      refreshFilterBar();
       void (async () => {
         await refreshStates(gen, slug, id);
         if (gen !== generation) return;
@@ -513,28 +599,84 @@ const paint = async () => {
       })();
     },
   });
-  mounted.push(projectSelect);
-  stateSelect = mountSelect(stateBox, {
-    label: "State",
-    value: filters.stateId,
-    options: stateOptions(),
-    onChange: (id) => {
+  mounted.push(projectMenu);
+  const stateMenuBox = document.createElement("div");
+  stateMenuBox.style.cssText = "flex:0 1 auto;min-width:0;max-width:40%;overflow:hidden;";
+  bar.append(stateMenuBox);
+  stateMenu = mountMenu(stateMenuBox, {
+    label: stateMenuLabel(),
+    variant: "ghost",
+    size: "sm",
+    items: stateMenuItems(),
+    onSelect: (id) => {
       filters.stateId = id;
-      stateSelect?.update({ value: id });
+      refreshFilterBar();
       void reload(gen, slug, false);
     },
   });
-  mounted.push(stateSelect);
-  mounted.push(mountCheckbox(mineBox, {
-    label: "Assigned to me",
-    checked: filters.mine,
-    onChange: (checked) => {
-      filters.mine = checked;
+  mounted.push(stateMenu);
+  const meBox = document.createElement("div");
+  meBox.style.cssText = "flex:0 0 auto;";
+  bar.append(meBox);
+  const meButton = mountButton(meBox, {
+    label: filters.mine ? "☑ Me" : "☐ Me",
+    variant: "ghost",
+    size: "sm",
+    onClick: () => {
+      filters.mine = !filters.mine;
+      refreshFilterBar();
       void reload(gen, slug, false);
     },
-  }));
+  });
+  mounted.push(meButton);
+  const searchInput = document.createElement("input");
+  searchInput.setAttribute("type", "text");
+  searchInput.setAttribute("aria-label", "Search work items");
+  searchInput.setAttribute("placeholder", "Search or PROJ-142");
+  searchInput.value = filters.search;
+  searchInput.style.cssText = "flex:1 1 60px;min-width:60px;background:none;border:0;outline:none;color:inherit;font:inherit;";
+  searchInput.addEventListener("input", () => {
+    filters.search = searchInput.value;
+    // Labels are repainted only when changed, so typing never steals focus.
+    refreshFilterBar();
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void reload(gen, slug, false), SEARCH_DEBOUNCE_MS);
+  });
+  bar.append(searchInput);
+  mounted.push({ dispose: () => searchInput.remove() });
+  const clearBox = document.createElement("div");
+  clearBox.style.cssText = "flex:0 0 auto;";
+  bar.append(clearBox);
+  const clearFilters = mountButton(clearBox, {
+    label: "Clear",
+    variant: "ghost",
+    size: "xs",
+    onClick: () => {
+      if (activeFilterCount() === 0) return;
+      filters.search = "";
+      filters.stateId = "";
+      filters.mine = false;
+      searchInput.value = "";
+      refreshFilterBar();
+      void reload(gen, slug, false);
+    },
+  });
+  mounted.push(clearFilters);
+  // Every chip shows its own state; the tooltips carry the full names the
+  // chips abbreviate. The Clear chip is only there while filtering.
+  function refreshFilterBar() {
+    projectMenu.update({ label: `${projectName(filters.projectId)} ▾` });
+    projectMenuBox.querySelector("button")?.setAttribute("title", `Project: ${projectName(filters.projectId)}`);
+    stateMenu?.update({ items: stateMenuItems(), label: stateMenuLabel() });
+    meButton.update({ label: filters.mine ? "☑ Me" : "☐ Me" });
+    meBox.querySelector("button")?.setAttribute("title", "Assigned to me");
+    clearBox.style.display = activeFilterCount() > 0 ? "" : "none";
+  }
+  refreshFilterBar();
+  listBox = div();
+  footerBox = div();
   mounted.push(mountText(footerBox, { text: "Select a row to open it." }));
-  // Best effort: a states failure leaves the State control with "All" alone.
+  // Best effort: a states failure leaves the State menu on "All" alone.
   await refreshStates(gen, slug, filters.projectId);
   await reload(gen, slug, false);
 };
@@ -561,7 +703,6 @@ async function loadAccount(gen: number) {
     return;
   }
   const me = JSON.parse(result.body) as { display_name?: string; id?: string };
-  if (typeof me.display_name === "string") account = me.display_name;
   meId = typeof me.id === "string" ? me.id : null;
 }
 
@@ -575,10 +716,15 @@ async function loadProjects(gen: number, slug: string) {
     .map((p) => ({ id: p.id as string, name: typeof p.name === "string" && p.name ? p.name : (p.id as string) }));
 }
 
-const stateOptions = () => [
-  { id: "", label: "All" },
-  ...states.map((s) => ({ id: s.id, label: s.name, hint: s.group ?? undefined })),
+const stateMenuItems = () => [
+  { id: "", label: "All states" },
+  ...states.map((s) => ({ id: s.id, label: s.name })),
 ];
+
+const stateMenuLabel = () => {
+  const name = filters.stateId ? states.find((s) => s.id === filters.stateId)?.name ?? filters.stateId : "All";
+  return `State: ${name} ▾`;
+};
 
 // Best-effort states for the State control (issue #10): any failure leaves the
 // filter at "All" and the list usable.
@@ -592,7 +738,7 @@ async function refreshStates(gen: number, slug: string, projectId: string) {
   }
   if (gen !== generation) return;
   if (filters.stateId && !states.some((s) => s.id === filters.stateId)) filters.stateId = "";
-  stateSelect?.update({ options: stateOptions(), value: filters.stateId });
+  stateMenu?.update({ items: stateMenuItems(), label: stateMenuLabel() });
 }
 
 const currentQuery = (nextPage: Page) => {
@@ -820,9 +966,11 @@ function renderFatal(message: string) {
 
 host.onReady((ctx) => {
   applyHostReady(ctx, document.documentElement);
+  surface = ctx.surface;
+  popover = ctx.popover ?? null;
+  features = ctx.features;
   if (ctx.connection) {
     connected = ctx.connection.connected;
-    account = ctx.connection.account ?? null;
   }
   const fromSettings = {
     slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
@@ -832,13 +980,18 @@ host.onReady((ctx) => {
   // load): replaying the whole storage-read + repaint flow for an echo would
   // close the open detail modal (its paint calls closeDetail), so identical
   // pushes are skipped like settings below.
-  const readyKey = JSON.stringify({ settings: fromSettings, connected, account });
+  const readyKey = JSON.stringify({ settings: fromSettings, connected });
   if (readyKey === previousReadyKey) return;
   previousReadyKey = readyKey;
   // One paint after the storage read so the first render already uses the
-  // remembered mapping; returning users are not asked twice.
+  // remembered mapping; returning users are not asked twice. The popped-out
+  // detail frame reads the same mapping and paints only its card (issue #16).
   void (async () => {
     settings = mergeMapping(fromSettings, await readStoredMapping());
+    if (surface === "popover") {
+      void paintDetailPopover();
+      return;
+    }
     void persistMapping(settings);
     previousSettings = JSON.stringify(settings);
     void paint();
@@ -869,7 +1022,6 @@ host.onConnection((connection) => {
   if (key === previousConnection) return;
   previousConnection = key;
   connected = connection.connected;
-  account = connection.account ?? null;
   void paint();
 });
 

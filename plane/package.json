@@ -37,6 +37,6 @@
     }
   },
   "devDependencies": {
-    "@openchamber/sdk": "^1.24.0"
+    "@openchamber/sdk": "^2.3.2"
   }
 }

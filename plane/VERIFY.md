@@ -11,19 +11,23 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
       `panel.entry`; `contributes.page` is `true`).
 - [ ] Install approval dialog lists capabilities `prompt`, `sessions`, `network`
       (network follows from the integration) and no others.
+- [ ] The host is OpenChamber 2.x, which advertises guest popovers
+      (`ready.features.popovers`). On an older host the rail keeps the in-frame
+      detail modal (issue #12) — nothing else changes.
 
 ## Connect
 
 - [ ] Settings → Integrations → Plane card shows a Connect control.
-- [ ] OAuth connect completes; panel shows "Connected as <display_name>".
+- [ ] OAuth connect completes; the panel proceeds straight to the filter
+      bar and work-item list (no account line).
 - [ ] The account lookup is `GET /api/v1/users/me/` (host-attached Bearer);
       v2 `/api/v2/users/me/` answers 403 for this app, so v1 is the working
-      path for both the account label and the assigned-to-me user id.
+      path for the assigned-to-me user id.
 
 ## Disconnect / reconnect
 
-- [ ] Disconnect: panel shows the "Not connected" empty state, no stale account.
-- [ ] Reconnect: account line returns without a panel reload.
+- [ ] Disconnect: panel shows the "Not connected" empty state.
+- [ ] Reconnect: the filter bar and list return without a panel reload.
 
 ## Settings persistence
 
@@ -55,8 +59,8 @@ badge, row normalization
 (identifier/title/state), canonical browse URLs, and backoff delays.
 A human with a Plane Cloud tenant walks this list once:
 
-- [ ] Set Workspace slug + Default project; panel lists projects with the
-      default pre-selected in the Project control.
+- [ ] Set Workspace slug + Default project; the unified filter bar shows
+      the default project pre-selected in its project menu.
 - [ ] Work-item rows show work item identifier, title, and state.
 - [ ] Search by text narrows the list; search by identifier (e.g. PROJ-142)
       surfaces the exact work item even when `?search=` alone would miss it.
@@ -137,17 +141,15 @@ state wiring. A human with a Plane Cloud tenant walks this list once:
 - [ ] Rows carry a pill with their state (e.g. "In Progress"), toned by the
       state's group (started → info, completed → success, cancelled → error,
       backlog/unstarted → neutral); the muted second line is gone.
-- [ ] The State control lists the project's states in the project's workflow
-      order with the group as a hint and "All" first; the state-group control
+- [ ] The State menu in the filter bar lists the project's states in the project's workflow
+      order with "All states" first; the state-group control
       is gone.
 - [ ] Picking "In Progress" (or "In Review") narrows the list to that state —
       a filter the v1 state-group control could not express.
 - [ ] Switching project re-loads the states and clears a state the new project
       does not have.
-- [ ] With `GET …/states/` failing, the list still loads with "All" and no
+- [ ] With `GET …/states/` failing, the list still loads with "All states" and no
       state options.
-- [ ] The account line reads "Connected as <name>", or "Plane user" — never
-      "Connected as .".
 
 ## Grouped list (issue #11)
 
@@ -184,11 +186,38 @@ once:
       the list.
 - [ ] The footer carries Open in Plane, Attach chip, Start session, and Link to
       open session; the panel's own footer action bar is gone.
-- [ ] On the rail the modal uses the panel width; on the full page it centres
-      at a readable width.
+- [ ] On the rail the detail pops out of the panel now — see "Popped-out detail"
+      below; on the full page it centres at a readable width.
 - [ ] A work item archived after the list loaded shows "Could not load this
       work item" with Open in Plane still offered.
 - [ ] Retry still works from the panel footer.
+
+## Popped-out detail (issue #16)
+
+The rail is a few hundred pixels wide, so the same card is drawn by a host
+popover instead: `host.openPopover` anchors it to the row and the host mounts
+`panel.entry` again with `ready.surface === "popover"` and the work item in
+`ready.popover.data`. Pure seam without a tenant: `node plane/check.mjs` covers
+the panel bundle wiring (`openPopover`, the `plane-detail-` id prefix, the
+`popovers` feature check that keeps an older host on the in-frame modal, and
+`setHeight`). A human with a Plane Cloud tenant walks this list once:
+
+- [ ] Clicking a work item on the rail opens its detail outside the panel,
+      anchored to the row and floating over the whole window (at most 640 wide
+      and 480 tall; the host shrinks it to fit a small window and flips or
+      shifts it to stay on screen).
+- [ ] The card carries the same fields, formatted description and footer as the
+      in-frame modal (issue #12/#13); Close, Escape and a click outside dismiss
+      it, and the row behind stays highlighted.
+- [ ] Attach chip / Start session / Link to open session work from the card and
+      the card goes away after; Open in Plane opens the browser.
+- [ ] A short work item's card is only as tall as its content; a long
+      description scrolls inside the 480px cap.
+- [ ] Scrolling the list, switching project or opening a host dialog dismisses
+      the card; picking another row replaces it.
+- [ ] On a host without popover support (`ready.features.popovers` absent) the
+      rail keeps the in-frame overlay from issue #12, and the full-screen page
+      keeps it on every host.
 
 ## Formatted description (issue #13)
 
