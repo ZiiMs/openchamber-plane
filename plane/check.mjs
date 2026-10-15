@@ -62,7 +62,6 @@ if (!existsSync(js)) fail("panel/main.js missing (run the bundler)"); else {
     "state_id__in", // work-item list carries the state filter (issue #10)
     "/states/", // states come from the project's own workflow (issue #10)
     "order_by", // states are asked for in workflow order
-    "Plane user", // an empty account name falls back instead of "Connected as ."
     "plane-section", // the grouped list renders per-state section headings
     "assignee_id", // work-item list carries the assigned-to-me filter
     "/work-items/", // work-item list / by-identifier paths

@@ -464,7 +464,6 @@ async function paintDetailPopover() {
 let generation = 0;
 let settings = { slug: "", defaultProject: "" };
 let connected = false;
-let account: string | null = null;
 let meId: string | null = null;
 let filters = { search: "", stateId: "", mine: false, projectId: "" };
 let projects: Array<{ id: string; name: string }> = [];
@@ -535,10 +534,6 @@ const paint = async () => {
     return;
   }
   const slug = settings.slug;
-  // The host sends an empty account string before the name is known; `??`
-  // alone would render "Connected as ." (issue #10).
-  const who = typeof account === "string" && account.trim() ? account.trim() : "Plane user";
-  mounted.push(mountText(root, { text: `Connected as ${who}.` }));
   const spinner = mountSpinner(root, { label: "Loading Plane projects" });
   mounted.push(spinner);
   try {
@@ -701,7 +696,6 @@ async function loadAccount(gen: number) {
     return;
   }
   const me = JSON.parse(result.body) as { display_name?: string; id?: string };
-  if (typeof me.display_name === "string") account = me.display_name;
   meId = typeof me.id === "string" ? me.id : null;
 }
 
@@ -900,7 +894,6 @@ host.onReady((ctx) => {
   features = ctx.features;
   if (ctx.connection) {
     connected = ctx.connection.connected;
-    account = ctx.connection.account ?? null;
   }
   const fromSettings = {
     slug: (ctx.settings?.["workspace-slug"] ?? "").trim(),
@@ -935,7 +928,6 @@ host.onConnection((connection) => {
   if (key === previousConnection) return;
   previousConnection = key;
   connected = connection.connected;
-  account = connection.account ?? null;
   void paint();
 });
 

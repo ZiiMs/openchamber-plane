@@ -18,15 +18,16 @@ manifest parse). A human with a Plane Cloud tenant walks this list once.
 ## Connect
 
 - [ ] Settings → Integrations → Plane card shows a Connect control.
-- [ ] OAuth connect completes; panel shows "Connected as <display_name>".
+- [ ] OAuth connect completes; the panel proceeds straight to the filter
+      bar and work-item list (no account line).
 - [ ] The account lookup is `GET /api/v1/users/me/` (host-attached Bearer);
       v2 `/api/v2/users/me/` answers 403 for this app, so v1 is the working
-      path for both the account label and the assigned-to-me user id.
+      path for the assigned-to-me user id.
 
 ## Disconnect / reconnect
 
-- [ ] Disconnect: panel shows the "Not connected" empty state, no stale account.
-- [ ] Reconnect: account line returns without a panel reload.
+- [ ] Disconnect: panel shows the "Not connected" empty state.
+- [ ] Reconnect: the filter bar and list return without a panel reload.
 
 ## Settings persistence
 
@@ -146,10 +147,8 @@ state wiring. A human with a Plane Cloud tenant walks this list once:
       a filter the v1 state-group control could not express.
 - [ ] Switching project re-loads the states and clears a state the new project
       does not have.
-- [ ] With `GET …/states/` failing, the list still loads with "All" and no
+- [ ] With `GET …/states/` failing, the list still loads with "All states" and no
       state options.
-- [ ] The account line reads "Connected as <name>", or "Plane user" — never
-      "Connected as .".
 
 ## Grouped list (issue #11)
 
