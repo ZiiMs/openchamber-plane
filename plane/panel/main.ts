@@ -454,7 +454,13 @@ async function paintDetailPopover() {
   };
   const card = document.createElement("div");
   card.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:14px;box-sizing:border-box;";
-  document.body.append(card);
+  // The popover frame reuses panel.entry, whose #root is height:100% with
+  // padding for the panel surface. Appending after it would start the card
+  // one viewport down and setHeight would measure from the wrong top, so
+  // the card mounts inside #root with the root collapsed around it.
+  root.style.height = "auto";
+  root.style.padding = "0";
+  root.append(card);
   await fillDetailCard(generation, row, card, () => void host.close().catch(() => {}), typeof data?.projectName === "string" ? data.projectName : null);
   // The host adds the card's border to this and clamps it to POPOVER_HEIGHT, so
   // a short work item does not leave a mostly empty card.
